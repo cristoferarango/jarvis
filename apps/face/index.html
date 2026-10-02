@@ -1,0 +1,55 @@
+<!doctype html>
+<html lang="es">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="theme-color" content="#01060c" />
+    <link rel="icon" type="image/svg+xml" href="/favicon.svg" />
+
+    <!--
+      Defensa en profundidad detrás del saneador (src/ui/sanitise.ts).
+
+      El marcado de los paneles lo escribe un modelo que acaba de leer la web
+      abierta, así que lo que importa cerrar es `img-src`: un solo
+      `<img src="https://…">` es una baliza que delata la dirección de esta
+      máquina sin necesidad de script.
+
+      `img-src`, `media-src` y `frame-src` se quedan en 'self' a propósito. La
+      cara y el núcleo comparten origen (el núcleo sirve esta página, y en
+      desarrollo Vite le reenvía /img, /media, /page y /ws), y el saneador
+      reescribe cada URL remota hacia esos endpoints: el navegador solo pide
+      bytes a localhost, y el núcleo los trae del exterior pasando por su guarda
+      SSRF. Abrir estos a https: devolvería la baliza.
+
+      `frame-src` añade solo YouTube y Vimeo, que no entregan el archivo de
+      vídeo; el saneador fija además las rutas dentro de esos hosts.
+
+      El resto es laxo porque la pila de voz lo necesita: 'wasm-unsafe-eval' y
+      'unsafe-eval' para ONNX y espeak-ng, workers blob: para la palabra de
+      activación y el modelo de voz, https: para descargar esos modelos, y
+      'unsafe-inline' para el preámbulo de React Fast Refresh en desarrollo.
+    -->
+    <meta
+      http-equiv="Content-Security-Policy"
+      content="
+        default-src 'self';
+        base-uri 'self';
+        object-src 'none';
+        frame-src 'self' https://www.youtube-nocookie.com https://www.youtube.com https://player.vimeo.com;
+        img-src 'self' data: blob:;
+        script-src 'self' 'unsafe-inline' 'unsafe-eval' 'wasm-unsafe-eval' blob:;
+        style-src 'self' 'unsafe-inline' https://fonts.googleapis.com;
+        font-src 'self' data: https://fonts.gstatic.com;
+        connect-src 'self' data: blob: https:;
+        worker-src 'self' blob:;
+        media-src 'self' data: blob:;
+      "
+    />
+
+    <title>CRISVIS</title>
+  </head>
+  <body>
+    <div id="root"></div>
+    <script type="module" src="/src/main.tsx"></script>
+  </body>
+</html>

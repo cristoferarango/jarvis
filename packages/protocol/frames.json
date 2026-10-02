@@ -1,0 +1,6 @@
+{
+  "version": 1,
+  "description": "Tipos de trama del WebSocket /ws entre la cara (apps/face) y el núcleo (src/crisvis). Fuente única: Python (crisvis.gateway.protocol) y TypeScript (packages/protocol/src/index.ts) se comprueban contra este archivo.",
+  "client": ["hello", "ask", "interrupt", "reply", "permissions"],
+  "core": ["ready", "status", "text", "tool", "done", "error", "panel", "blade", "ui", "capture", "confirm"]
+}

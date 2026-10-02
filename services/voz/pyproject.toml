@@ -1,0 +1,46 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "crisvis-voz"
+version = "0.1.0"
+description = "Voz clonada local de Crisvis (XTTS-v2 en la GPU)."
+requires-python = ">=3.10,<3.13"
+license = { text = "MIT" }
+dependencies = [
+    # XTTS-v2. El modelo en sí se publica bajo la Coqui Public Model License
+    # (solo uso no comercial).
+    "coqui-tts>=0.27,<0.28",
+    # transformers 5 quitó internos que usa el GPT de XTTS.
+    "transformers>=4.57,<5",
+    # 2.8 es la primera serie con ruedas cu128 (necesarias para las RTX 50) en
+    # la que torchaudio.load aún no exige torchcodec.
+    "torch==2.8.*",
+    "torchaudio==2.8.*",
+    "fastapi>=0.110",
+    "uvicorn>=0.30",
+    "soundfile>=0.12",
+    # Separa la voz de la música y los efectos al preparar muestras sacadas de
+    # películas o vídeos.
+    "demucs>=4.1",
+]
+
+[project.scripts]
+crisvis-voz = "crisvis_voz.server:main"
+
+[tool.uv]
+# Las ruedas cu128 solo existen para Windows y Linux.
+environments = ["sys_platform == 'win32'", "sys_platform == 'linux'"]
+
+[tool.uv.sources]
+torch = [{ index = "pytorch-cu128" }]
+torchaudio = [{ index = "pytorch-cu128" }]
+
+[[tool.uv.index]]
+name = "pytorch-cu128"
+url = "https://download.pytorch.org/whl/cu128"
+explicit = true
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/crisvis_voz"]

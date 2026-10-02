@@ -1,0 +1,14 @@
+{
+  "name": "@crisvis/protocol",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Contrato del WebSocket entre la cara de Crisvis y su núcleo.",
+  "exports": {
+    ".": "./src/index.ts",
+    "./frames.json": "./frames.json"
+  },
+  "scripts": {
+    "test": "node check.mjs"
+  }
+}

@@ -1,0 +1,18 @@
+# Texto con finales de línea normalizados; binarios intactos.
+* text=auto
+
+*.wav binary
+*.mp3 binary
+*.flac binary
+*.ogg binary
+*.png binary
+*.jpg binary
+*.ico binary
+*.woff2 binary
+*.onnx binary
+*.wasm binary
+
+*.ps1 text eol=crlf
+*.cmd text eol=crlf
+*.bat text eol=crlf
+*.sh text eol=lf

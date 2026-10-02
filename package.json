@@ -1,0 +1,27 @@
+{
+  "name": "crisvis",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Asistente personal local: interfaz holográfica de jarvis con el cerebro de OpenJarvis, en una sola aplicación.",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20"
+  },
+  "workspaces": [
+    "packages/*",
+    "apps/*"
+  ],
+  "scripts": {
+    "setup": "node scripts/setup.mjs",
+    "dev": "node scripts/dev.mjs",
+    "build": "npm run build -w @crisvis/face",
+    "start": "uv run python -m crisvis",
+    "doctor": "uv run python -m crisvis doctor",
+    "voz:instalar": "uv sync --project services/voz --python 3.12",
+    "voz": "uv run python -m crisvis voz",
+    "typecheck": "npm run typecheck -w @crisvis/face",
+    "test": "npm test -w @crisvis/protocol && uv run python -m pytest -q",
+    "lint": "uv run python -m ruff check src tests && npm run lint -w @crisvis/face"
+  }
+}
