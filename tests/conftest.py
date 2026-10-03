@@ -31,4 +31,5 @@ def _no_real_browser_tabs(monkeypatch: pytest.MonkeyPatch) -> list[str]:
     monkeypatch.setattr("crisvis.body.desktop.webbrowser.open", fake)
     # Ni se busca ni se toca una ventana real del navegador.
     monkeypatch.setattr("crisvis.body.desktop.Desktop.find_site_window", lambda self, site: None)
+    monkeypatch.setattr("crisvis.body.desktop.Desktop.find_site_tab", lambda self, site: None)
     return opened

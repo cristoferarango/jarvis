@@ -623,20 +623,57 @@ class Desktop:
                 return w
         return None
 
+    def title_of(self, hwnd: int) -> str:
+        buf = ctypes.create_unicode_buffer(512)
+        _user32().GetWindowTextW(hwnd, buf, 512)
+        return buf.value
+
+    def find_site_tab(self, site: str) -> Window | None:
+        """Ventana de navegador con una pestaña de ``site``, ya seleccionada y delante.
+
+        Windows solo enseña el título de la pestaña activa, y mientras se habla con
+        Crisvis la activa suele ser la suya: se busca en la tira de pestañas con UI
+        Automation y se selecciona la del sitio.
+        """
+        if not WINDOWS or not site:
+            return None
+        front = self.find_site_window(site)
+        if front is not None:
+            self.activate(front)
+            return front
+        import uiautomation as auto
+
+        with auto.UIAutomationInitializerInThread(debug=False):
+            for w in self.windows():
+                if w.process.lower() not in _BROWSERS:
+                    continue
+                tab = auto.ControlFromHandle(w.hwnd).TabItemControl(searchDepth=14, SubName=site)
+                if not tab.Exists(0.5, 0.1):
+                    continue
+                self.activate(w)
+                try:
+                    tab.GetSelectionItemPattern().Select()
+                except Exception:  # noqa: BLE001 - navegadores sin el patrón de selección
+                    tab.Click(simulateMove=False)
+                time.sleep(0.3)
+                return Window(w.hwnd, self.title_of(w.hwnd), w.process, False)
+        return None
+
     def open_web(self, url: str) -> str:
-        """Abre ``url`` reutilizando la pestaña del mismo sitio si ya hay una delante.
+        """Abre ``url`` en la pestaña de ese sitio si ya hay una abierta.
 
         Sin pestaña de ese sitio, una pestaña nueva en el navegador predeterminado.
         En la pestaña existente solo se escribe una URL https validada en la barra de
-        direcciones (Ctrl+L), y solo si esa ventana de navegador quedó delante.
+        direcciones (Ctrl+L), y solo si esa ventana quedó delante con la pestaña del
+        sitio activa.
         """
         site = site_name(url)
-        win = self.find_site_window(site) if site else None
-        if win is None or safe_address(url) is None:
-            webbrowser.open(url)
-            return f"la página {short(url, 80)} en una pestaña nueva"
-        self.activate(win)
-        if _user32().GetForegroundWindow() != win.hwnd:
+        win = self.find_site_tab(site) if site and safe_address(url) else None
+        if (
+            win is None
+            or _user32().GetForegroundWindow() != win.hwnd
+            or site not in self.title_of(win.hwnd)
+        ):
             webbrowser.open(url)
             return f"la página {short(url, 80)} en una pestaña nueva"
         if not is_site_home(url):

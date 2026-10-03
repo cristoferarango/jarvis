@@ -44,17 +44,29 @@ def test_urls_are_built_here_never_from_model_text() -> None:
 
 
 class FakeDesk(Desktop):
-    def __init__(self, window: Window | None, foreground: int | None = None) -> None:
+    """Una ventana de navegador con pestañas; ``selects`` = si seleccionar una funciona."""
+
+    def __init__(
+        self, window: Window | None, tabs: list[str] | None = None, selects: bool = True
+    ) -> None:
         super().__init__()
         self.window = window
-        self.foreground = foreground if foreground is not None else (window.hwnd if window else 0)
+        self.title = window.title if window else ""
+        self.tabs = tabs if tabs is not None else ([window.title] if window else [])
+        self.selects = selects
         self.steps: list[Any] = []
 
-    def find_site_window(self, site: str) -> Window | None:
-        return self.window if self.window and site in self.window.title else None
+    def find_site_tab(self, site: str) -> Window | None:
+        match = next((t for t in self.tabs if site in t), None)
+        if self.window is None or match is None:
+            return None
+        self.steps.append(("focus", self.window.hwnd))
+        if self.selects:
+            self.title = match
+        return self.window
 
-    def activate(self, window: Window) -> None:
-        self.steps.append(("focus", window.hwnd))
+    def title_of(self, hwnd: int) -> str:
+        return self.title
 
     def hotkey(self, keys: list[str], times: int = 1) -> None:
         self.steps.append(("keys", "+".join(keys)))
@@ -86,6 +98,28 @@ def test_existing_youtube_tab_is_reused(browser: dict[str, Any]) -> None:
         ("focus", 7), ("keys", "ctrl+l"), ("type", WATCH), ("keys", "delete"), ("keys", "enter")
     ]
     assert "ya estaba abierta" in where
+
+
+def test_youtube_behind_the_crisvis_tab_is_selected_and_reused(browser: dict[str, Any]) -> None:
+    window = Window(7, "CRISVIS: grabación del micrófono - Google Chrome", "chrome.exe", False)
+    desk = FakeDesk(
+        window,
+        tabs=["(74) WhatsApp", "CRISVIS: grabación del micrófono",
+              "Alan Walker - The Spectre - YouTube: reproducción de audio"],
+    )
+    browser["fg"] = 7
+    desk.open_web(WATCH)
+    assert browser["opened"] == []
+    assert ("type", WATCH) in desk.steps
+
+
+def test_never_types_if_the_tab_could_not_be_selected(browser: dict[str, Any]) -> None:
+    window = Window(7, "CRISVIS - Google Chrome", "chrome.exe", False)
+    desk = FakeDesk(window, tabs=["CRISVIS", "Algo - YouTube"], selects=False)
+    browser["fg"] = 7
+    desk.open_web(WATCH)
+    assert not any(step[0] == "type" for step in desk.steps)
+    assert browser["opened"] == [WATCH]
 
 
 def test_opening_the_site_home_only_brings_the_tab_forward(browser: dict[str, Any]) -> None:
