@@ -2008,6 +2008,11 @@ kbd {
   opacity: 0.5;
   word-break: break-all;
 }
+.confirm-warning {
+  margin: 6px 0;
+  font-size: 12px;
+  color: #ffb347;
+}
 .confirm-actions { display: flex; gap: 10px; margin-top: 16px; }
 .confirm-actions button {
   flex: 1;
@@ -2032,3 +2037,217 @@ kbd {
   letter-spacing: 0.2em;
   opacity: 0.45;
 }
+/* Informe del día (OpenClawAdapter). Fuera del .hud: necesita punteros. */
+.briefing-launch {
+  position: fixed;
+  right: 34px;
+  bottom: 34px;
+  z-index: 7;
+  padding: 7px 14px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.3em;
+  color: var(--accent);
+  background: rgba(2, 10, 12, 0.55);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+  backdrop-filter: blur(4px);
+}
+.briefing-launch:hover { border-color: var(--accent); box-shadow: 0 0 16px color-mix(in srgb, var(--accent) 30%, transparent); }
+.briefing-launch.is-running { animation: briefing-pulse 1.2s ease-in-out infinite; }
+@keyframes briefing-pulse { 50% { box-shadow: 0 0 22px color-mix(in srgb, var(--accent) 45%, transparent); } }
+
+.briefing {
+  --ok: #3ef2a8;
+  --warn: #ffb347;
+  --bad: #ff5a5a;
+  position: fixed;
+  left: 50%;
+  top: 7vh;
+  z-index: 7;
+  width: min(1080px, 94vw);
+  height: 80vh;
+  display: flex;
+  flex-direction: column;
+  color: #eaf9ff;
+  background: rgba(2, 10, 12, 0.88);
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 3px;
+  box-shadow: 0 0 50px color-mix(in srgb, var(--accent) 18%, transparent);
+  backdrop-filter: blur(10px);
+  font-size: 13px;
+}
+.briefing-head {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 20%, transparent);
+  font-size: 10px;
+  letter-spacing: 0.24em;
+  color: var(--accent);
+}
+.briefing-title { font-size: 12px; letter-spacing: 0.34em; }
+.briefing-meta { opacity: 0.7; letter-spacing: 0.12em; }
+.briefing-badge { padding: 2px 6px; border: 1px solid currentColor; border-radius: 2px; }
+.badge-dry { color: var(--ok); }
+.badge-mock { color: var(--warn); }
+.briefing-spacer { flex: 1; }
+.briefing-head button, .briefing-refresh, .proposal button {
+  padding: 5px 10px;
+  font: inherit;
+  font-size: 10px;
+  letter-spacing: 0.16em;
+  color: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--accent) 40%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.briefing-head button:hover, .briefing-refresh:hover, .proposal button:hover { background: color-mix(in srgb, var(--accent) 16%, transparent); }
+.briefing-head button:disabled, .briefing-refresh:disabled { opacity: 0.4; cursor: default; }
+.briefing-tabs {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px;
+  padding: 8px 12px 0;
+  border-bottom: 1px solid color-mix(in srgb, var(--accent) 16%, transparent);
+}
+.briefing-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 7px 11px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: #b9dfe6;
+  background: transparent;
+  border: 1px solid transparent;
+  border-bottom: none;
+  border-radius: 2px 2px 0 0;
+  cursor: pointer;
+}
+.briefing-tab.is-active { color: #fff; border-color: color-mix(in srgb, var(--accent) 35%, transparent); background: color-mix(in srgb, var(--accent) 10%, transparent); }
+.briefing-tab .dot { width: 6px; height: 6px; border-radius: 50%; background: #456; }
+.state-success .dot { background: var(--ok); }
+.state-partial .dot { background: var(--warn); }
+.state-timeout .dot, .state-unavailable .dot, .state-cancelled .dot { background: #8aa; }
+.state-error .dot, .state-unauthorized .dot { background: var(--bad); }
+.state-loading .dot { background: var(--accent); animation: briefing-pulse 1s infinite; }
+.briefing-body { flex: 1; overflow: auto; padding: 12px 18px 18px; }
+.briefing-toolbar {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 14px;
+  margin-bottom: 12px;
+  font-size: 11px;
+  color: #9cc7cf;
+}
+.briefing-state { padding: 2px 8px; border: 1px solid currentColor; border-radius: 2px; }
+.briefing-state.state-success { color: var(--ok); }
+.briefing-state.state-partial { color: var(--warn); }
+.briefing-state.state-error, .briefing-state.state-unauthorized { color: var(--bad); }
+.briefing-state.state-timeout, .briefing-state.state-unavailable { color: #a9c3c8; }
+.briefing-refresh { margin-left: auto; }
+.briefing-error, .briefing-failure, .briefing-partial {
+  padding: 8px 10px;
+  margin: 8px 0;
+  border-left: 2px solid var(--warn);
+  background: rgba(255, 179, 71, 0.07);
+}
+.briefing-error, .briefing-failure { border-color: var(--bad); background: rgba(255, 90, 90, 0.07); }
+.briefing-empty { opacity: 0.6; font-style: italic; }
+.briefing-voice { font-size: 15px; line-height: 1.55; margin: 0 0 14px; }
+.briefing-counts { display: grid; grid-template-columns: repeat(4, 1fr); gap: 10px; margin-bottom: 14px; }
+.briefing-counts .count { padding: 10px; border: 1px solid color-mix(in srgb, var(--accent) 20%, transparent); border-radius: 2px; }
+.briefing-counts b { display: block; font-size: 22px; color: var(--accent); }
+.briefing-counts span { font-size: 10px; letter-spacing: 0.12em; opacity: 0.7; }
+.briefing-alerts { list-style: none; margin: 0 0 12px; padding: 0; display: grid; gap: 4px; }
+.alert { display: flex; gap: 10px; padding: 6px 8px; background: rgba(255, 255, 255, 0.03); border-left: 2px solid #567; }
+.alert-level { width: 70px; font-size: 9px; letter-spacing: 0.18em; }
+.alert-critical { border-color: var(--bad); } .alert-critical .alert-level { color: var(--bad); }
+.alert-high { border-color: #ff8a4c; } .alert-high .alert-level { color: #ff8a4c; }
+.alert-medium { border-color: var(--warn); } .alert-medium .alert-level { color: var(--warn); }
+.alert-low { border-color: #7fb6c0; } .alert-low .alert-level { color: #7fb6c0; }
+.alert-info { border-color: #4e6e75; } .alert-info .alert-level { color: #8fb0b6; }
+.briefing-sourcegrid { display: flex; flex-wrap: wrap; gap: 6px; }
+.chip { padding: 3px 8px; font-size: 10px; border: 1px solid #355; border-radius: 10px; }
+.chip.state-success { border-color: color-mix(in srgb, var(--ok) 50%, transparent); }
+.chip.state-timeout, .chip.state-unavailable, .chip.state-error, .chip.state-unauthorized { border-color: color-mix(in srgb, var(--bad) 50%, transparent); }
+.briefing-source { margin-bottom: 16px; }
+.briefing-source h4, .briefing-gateway h4, .briefing-audit h4 { margin: 4px 0 8px; font-size: 11px; letter-spacing: 0.2em; color: var(--accent); font-weight: 500; }
+.briefing-source h4 small { opacity: 0.6; letter-spacing: 0.1em; }
+.briefing-items { list-style: none; margin: 0; padding: 0; display: grid; gap: 2px; }
+.briefing-item { display: flex; gap: 12px; padding: 7px 8px; background: rgba(255, 255, 255, 0.025); }
+.briefing-item time { width: 44px; flex: none; font-family: 'JetBrains Mono', monospace; font-size: 11px; color: var(--accent); }
+.item-title { font-size: 13px; }
+.item-sub { font-size: 11px; opacity: 0.65; }
+.item-meta { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 3px; font-size: 10px; opacity: 0.5; }
+.briefing-proposals { margin-top: 10px; display: grid; gap: 6px; }
+.proposals-title { font-size: 10px; letter-spacing: 0.12em; opacity: 0.6; }
+.proposal { display: flex; flex-wrap: wrap; align-items: center; gap: 10px; padding: 6px 8px; border: 1px dashed #355; }
+.proposal-risk { font-size: 9px; letter-spacing: 0.16em; padding: 2px 6px; border: 1px solid currentColor; border-radius: 2px; }
+.risk-medium .proposal-risk { color: var(--warn); }
+.risk-high .proposal-risk { color: #ff8a4c; }
+.risk-critical .proposal-risk { color: var(--bad); }
+.proposal-text { flex: 1; }
+.proposal-outcome { width: 100%; font-size: 11px; opacity: 0.85; }
+.out-blocked, .out-denied, .out-error { color: var(--bad); }
+.out-simulated { color: var(--ok); }
+.briefing-gateway { margin-bottom: 12px; }
+.gw-listo { color: var(--ok); } .gw-no_instalado, .gw-detenido, .gw-error, .gw-bloqueado { color: var(--warn); }
+.briefing-dryline { font-size: 12px; opacity: 0.8; }
+.briefing-table { width: 100%; border-collapse: collapse; margin: 10px 0 16px; font-size: 12px; }
+.briefing-table th { text-align: left; font-weight: 500; font-size: 10px; letter-spacing: 0.14em; color: var(--accent); padding: 5px 6px; border-bottom: 1px solid color-mix(in srgb, var(--accent) 25%, transparent); }
+.briefing-table td { padding: 5px 6px; border-bottom: 1px solid rgba(255, 255, 255, 0.05); }
+.briefing-audit ul { list-style: none; margin: 0; padding: 0; font-family: 'JetBrains Mono', monospace; font-size: 11px; opacity: 0.75; }
+.briefing-audit time { color: var(--accent); margin-right: 6px; }
+
+/* Aprobación exacta de una acción del informe. */
+.approval {
+  --risk: #ffb347;
+  position: fixed;
+  left: 50%;
+  top: 14vh;
+  z-index: 9;
+  width: min(600px, 90vw);
+  max-height: 76vh;
+  overflow: auto;
+  padding: 18px 20px 16px;
+  color: #eaf9ff;
+  background: rgba(2, 10, 12, 0.94);
+  border: 1px solid var(--risk);
+  border-radius: 3px;
+  box-shadow: 0 0 46px color-mix(in srgb, var(--risk) 32%, transparent);
+  backdrop-filter: blur(8px);
+}
+.approval-high { --risk: #ff8a4c; }
+.approval-critical { --risk: #ff5a5a; }
+.approval-head { display: flex; align-items: center; gap: 12px; font-size: 9px; letter-spacing: 0.3em; color: var(--risk); }
+.approval-risk { padding: 2px 6px; border: 1px solid var(--risk); border-radius: 2px; }
+.approval-clock { margin-left: auto; font-family: 'JetBrains Mono', monospace; }
+.approval-dry { margin: 12px 0 0; padding: 6px 8px; font-size: 12px; color: #3ef2a8; border: 1px solid rgba(62, 242, 168, 0.35); }
+.approval-grid { display: grid; grid-template-columns: 110px 1fr; gap: 6px 12px; margin: 14px 0; font-size: 13px; }
+.approval-grid dt { font-size: 10px; letter-spacing: 0.16em; opacity: 0.6; padding-top: 2px; }
+.approval-grid dd { margin: 0; word-break: break-word; }
+.approval-grid pre { margin: 0; white-space: pre-wrap; font-family: 'JetBrains Mono', monospace; font-size: 11px; }
+.approval-actions { display: flex; gap: 10px; }
+.approval-actions button {
+  flex: 1;
+  padding: 9px 10px;
+  font: inherit;
+  font-size: 11px;
+  letter-spacing: 0.22em;
+  text-transform: uppercase;
+  color: inherit;
+  background: transparent;
+  border: 1px solid color-mix(in srgb, var(--risk) 50%, transparent);
+  border-radius: 2px;
+  cursor: pointer;
+}
+.approval-actions .approval-yes { background: color-mix(in srgb, var(--risk) 18%, transparent); border-color: var(--risk); }
+.approval-actions button:hover { background: color-mix(in srgb, var(--risk) 28%, transparent); }
+.approval-actions kbd { margin-left: 6px; opacity: 0.6; }

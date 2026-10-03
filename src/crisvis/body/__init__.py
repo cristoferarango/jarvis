@@ -2,6 +2,9 @@
 
 from __future__ import annotations
 
+from collections.abc import Callable
+from typing import Any
+
 from crisvis.body.base import FaceTool
 from crisvis.body.display import display_tools
 from crisvis.body.interface import interface_tools
@@ -18,6 +21,9 @@ def build_body_tools(
     camera: bool,
     see: SeeFn | None,
     pc: bool = False,
+    clipboard: bool = False,
+    apps: tuple[str, ...] = (),
+    shell_token: Callable[[], Any] | None = None,
 ) -> list[FaceTool]:
     tools: list[FaceTool] = []
     if interface:
@@ -26,7 +32,13 @@ def build_body_tools(
     if camera:
         tools += vision_tools(surface, see)
     if pc:
-        from crisvis.body.pc import pc_tools
+        from crisvis.body.pc import clipboard_tool, pc_tools
 
-        tools += pc_tools(see)
+        tools += pc_tools(see, apps=apps)
+        if clipboard:
+            tools.append(clipboard_tool())
+    if shell_token is not None:
+        from crisvis.body.shell import shell_tool
+
+        tools.append(shell_tool(shell_token))
     return tools

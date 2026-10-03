@@ -2,12 +2,13 @@ import { useEffect, useState } from 'react'
 import { AnimatePresence, motion } from 'framer-motion'
 import { useStore } from '../store'
 import { answerConfirm } from '../lib/confirm'
+import { voiceCanApprove } from '../lib/guardrails'
 
-const TIER_LABEL = {
-  interfaz: 'INTERFAZ',
-  lectura: 'LECTURA',
-  escritura: 'ESCRITURA',
-  peligroso: 'PELIGROSO',
+const RISK_LABEL = {
+  low: 'RIESGO BAJO',
+  medium: 'RIESGO MEDIO',
+  high: 'RIESGO ALTO',
+  critical: 'CRÍTICO',
 } as const
 
 /**
@@ -57,11 +58,16 @@ export function Confirm() {
           transition={{ type: 'spring', stiffness: 300, damping: 26 }}
         >
           <div className="confirm-head">
-            <span className="confirm-kicker">PERMISO SOLICITADO</span>
-            <span className="confirm-tier">{TIER_LABEL[confirm.tier] ?? confirm.tier}</span>
+            <span className="confirm-kicker">PERMISO PARA ESTA ACCIÓN</span>
+            <span className="confirm-tier">{RISK_LABEL[confirm.risk] ?? confirm.risk}</span>
             <span className="confirm-clock">{left}s</span>
           </div>
           <div className="confirm-summary">{confirm.summary}</div>
+          {confirm.target && <div className="confirm-tool">Ventana: {confirm.target}</div>}
+          {confirm.warning && <div className="confirm-warning">{confirm.warning}</div>}
+          {!confirm.cancellable && confirm.risk !== 'low' && (
+            <div className="confirm-warning">Una vez iniciada, esta acción no se puede cancelar.</div>
+          )}
           <div className="confirm-tool">{confirm.tool}</div>
           <div className="confirm-actions">
             <button type="button" className="confirm-yes" onClick={() => answerConfirm(true)}>
@@ -71,7 +77,11 @@ export function Confirm() {
               Denegar <kbd>Esc</kbd>
             </button>
           </div>
-          <div className="confirm-hint">o diga «sí» / «no»</div>
+          <div className="confirm-hint">
+            {voiceCanApprove(confirm.risk)
+              ? 'o diga «sí» / «no»'
+              : 'Riesgo alto: apruebe con el botón o Intro'}
+          </div>
         </motion.div>
       )}
     </AnimatePresence>

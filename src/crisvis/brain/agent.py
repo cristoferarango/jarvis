@@ -16,6 +16,7 @@ from __future__ import annotations
 import asyncio
 import json
 import logging
+import re
 from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
@@ -85,6 +86,18 @@ class ThinkFilter:
         return rest
 
 
+# Chino, japonés y coreano (y su puntuación de ancho completo): qwen3 se pasa a
+# veces a su idioma de entrenamiento a mitad de frase y el TTS lo leería.
+_CJK = re.compile(
+    "[\u2e80-\u2fff\u3000-\u303f\u3040-\u30ff\u3100-\u31ff\u3400-\u4dbf"
+    "\u4e00-\u9fff\uac00-\ud7af\uf900-\ufaff\uff00-\uffef]+"
+)
+
+
+def strip_cjk(text: str) -> str:
+    return _CJK.sub("", text)
+
+
 def merge_tool_fragments(acc: list[dict[str, Any]], fragments: list[dict[str, Any]]) -> None:
     """Junta fragmentos de tool_calls estilo OpenAI (o completos, estilo Ollama)."""
     for frag in fragments:
@@ -127,10 +140,12 @@ class CrisvisVoiceAgent(ToolUsingAgent):
         max_tokens: int | None = None,
         system_prompt: str | None = None,
         gate: Gate | None = None,
+        hooks: Any = None,
         engine_options: dict[str, Any] | None = None,
         think: str | None = None,
         capability_policy: Any = None,
         rate_limiter: Any = None,
+        language_reminder: str = "",
         **_: Any,
     ) -> None:
         super().__init__(
@@ -150,10 +165,13 @@ class CrisvisVoiceAgent(ToolUsingAgent):
         )
         self._system_prompt = system_prompt
         self._gate = gate
+        # ExecutionTracker de la sesión: begin/end alrededor de cada ejecución.
+        self._hooks = hooks
         self._engine_options = dict(engine_options or {})
         # None = no tocar; "primero" = razonar solo al decidir qué herramienta
         # usar; "siempre" / "nunca".
         self._think = think
+        self._language_reminder = language_reminder
 
     @property
     def tool_specs(self) -> list[ToolSpec]:
@@ -216,7 +234,23 @@ class CrisvisVoiceAgent(ToolUsingAgent):
             if refusal:
                 return ToolResult(call.name, refusal, success=False)
 
-        return await asyncio.to_thread(self._executor.execute, call)
+        hooks = self._hooks
+        if hooks is None:
+            return await asyncio.to_thread(self._executor.execute, call)
+        execution = hooks.begin(call.name, args)
+
+        def run() -> ToolResult:
+            # El cierre se registra en el hilo: si el turno se cancela, la
+            # herramienta sigue aquí hasta que termina o la matan.
+            try:
+                result = self._executor.execute(call)
+            except BaseException as exc:
+                hooks.end(execution, None, exc)
+                raise
+            hooks.end(execution, result, None)
+            return result
+
+        return await asyncio.to_thread(run)
 
     async def run_stream(
         self, input: str, context: AgentContext | None = None
@@ -242,13 +276,13 @@ class CrisvisVoiceAgent(ToolUsingAgent):
             ):
                 if chunk.content:
                     content.append(chunk.content)
-                    visible = think.feed(chunk.content)
+                    visible = strip_cjk(think.feed(chunk.content))
                     if visible:
                         spoken.append(visible)
                         yield TextDelta(visible)
                 if chunk.tool_calls:
                     merge_tool_fragments(fragments, chunk.tool_calls)
-            tail = think.flush()
+            tail = strip_cjk(think.flush())
             if tail:
                 spoken.append(tail)
                 yield TextDelta(tail)
@@ -285,10 +319,13 @@ class CrisvisVoiceAgent(ToolUsingAgent):
                 if found:
                     taint = found if taint is None else taint.union(found)
                 yield ToolFinished(call.id, call.name, result.success)
+                content_out = str(result.content)
+                if self._language_reminder and call is calls[-1]:
+                    content_out = f"{content_out}\n\n{self._language_reminder}"
                 messages.append(
                     Message(
                         role=Role.TOOL,
-                        content=str(result.content),
+                        content=content_out,
                         tool_call_id=call.id,
                         name=call.name,
                     )

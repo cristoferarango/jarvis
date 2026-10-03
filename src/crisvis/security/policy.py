@@ -105,6 +105,7 @@ _KNOWN: dict[str, Tier] = {
     "pc_find_files": Tier.LECTURA,
     "pc_media": Tier.INTERFAZ,
     "pc_open": Tier.ESCRITURA,
+    "pc_youtube": Tier.ESCRITURA,
     "pc_window": Tier.ESCRITURA,
     "pc_click": Tier.ESCRITURA,
     "pc_type": Tier.ESCRITURA,
@@ -113,6 +114,8 @@ _KNOWN: dict[str, Tier] = {
     "pc_file_manage": Tier.ESCRITURA,
     "pc_kill": Tier.PELIGROSO,
     "pc_power": Tier.PELIGROSO,
+    # El portapapeles puede llevar contraseñas: se pregunta siempre, también en LIBRE.
+    "read_clipboard": Tier.PELIGROSO,
 }
 
 # Para herramientas desconocidas (MCP): el nombre tiene que defenderse solo.

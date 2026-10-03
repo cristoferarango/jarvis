@@ -13,6 +13,7 @@
     "build": "tsc -b && vite build",
     "typecheck": "tsc -b",
     "lint": "oxlint",
+    "test": "node --test test/briefing.test.ts test/guardrails.test.ts",
     "preview": "vite preview"
   },
   "dependencies": {

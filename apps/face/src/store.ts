@@ -6,7 +6,12 @@ export type PendingConfirm = {
   id: string
   tool: string
   tier: 'interfaz' | 'lectura' | 'escritura' | 'peligroso'
+  risk: 'low' | 'medium' | 'high' | 'critical'
   summary: string
+  warning: string
+  /** Ventana sobre la que actuará (control del PC). */
+  target: string
+  cancellable: boolean
   /** Momento (ms) en que el núcleo lo dará por denegado. */
   deadline: number
 }

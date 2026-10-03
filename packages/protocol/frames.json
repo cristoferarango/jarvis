@@ -1,6 +1,6 @@
 {
-  "version": 1,
-  "description": "Tipos de trama del WebSocket /ws entre la cara (apps/face) y el núcleo (src/crisvis). Fuente única: Python (crisvis.gateway.protocol) y TypeScript (packages/protocol/src/index.ts) se comprueban contra este archivo.",
-  "client": ["hello", "ask", "interrupt", "reply", "permissions"],
-  "core": ["ready", "status", "text", "tool", "done", "error", "panel", "blade", "ui", "capture", "confirm"]
+  "version": 2,
+  "description": "Tipos de trama del WebSocket /ws entre la cara (apps/face) y el núcleo (src/crisvis). Fuente única: Python (crisvis.gateway.protocol) y TypeScript (packages/protocol/src/index.ts) se comprueban contra este archivo. 'permissions' se retiró en la versión 2: el modo solo lo cambia el núcleo y esa trama se rechaza y se audita.",
+  "client": ["hello", "ask", "interrupt", "reply", "briefing", "propose"],
+  "core": ["ready", "status", "text", "tool", "done", "error", "panel", "blade", "ui", "capture", "confirm", "briefing", "approval", "outcome", "cancel", "input"]
 }

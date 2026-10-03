@@ -1,4 +1,4 @@
-import { CORE_HTTP_URL } from '../config'
+import { authFetch } from './auth'
 import { GREETING, persona, wakePattern } from './persona'
 import { getMic } from './audio'
 import { audibleNow, speakingNow, speakingSince } from './tts'
@@ -359,6 +359,8 @@ function interrupts(heard: string, spoken: string): boolean {
   )
   for (const match of heard.matchAll(pattern)) {
     const words = norm(match[0]).split(' ').filter(Boolean)
+    // Un «no» suelto no corta: lo dice él a menudo y el reconocedor lo saca del ruido.
+    if (words.length === 1 && words[0] === 'no') continue
     if (words.length && !words.every((w) => his.has(w))) return true
   }
   return false
@@ -505,7 +507,7 @@ async function startElevenVoice(h: VoiceHandlers): Promise<Voice> {
     if (mode === 'deaf') return
     const t0 = performance.now()
     try {
-      const res = await fetch(`${CORE_HTTP_URL}/stt`, {
+      const res = await authFetch('/stt', {
         method: 'POST',
         headers: { 'content-type': blob.type || 'audio/webm' },
         body: blob,
@@ -687,6 +689,16 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
    *  how many words of the phrase were his, and what he was saying. Indices
    *  restart with every session. */
   let own = new Map<number, { words: number; spoken: string }>()
+  /** Palabras de cada resultado ya enviadas o descartadas. Chrome confirma el
+   *  texto provisional después de que lo hayamos enviado: sin esto, esa
+   *  confirmación volvía a entrar como un segundo turno y cortaba la respuesta. */
+  let consumed = new Map<number, number>()
+  /** Último texto visto de cada resultado de la sesión. */
+  let latest = new Map<number, string>()
+
+  const consumeAll = () => {
+    for (const [i, chunk] of latest) consumed.set(i, chunk.split(/\s+/).filter(Boolean).length)
+  }
 
   /** Same assembly rules as the premium path — a pause is not a full stop. */
   const assemble = makeAssembler({
@@ -719,6 +731,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
   const emit = () => {
     const text = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     const mode = h.mode()
+    consumeAll()
     reset()
     if (!text || mode === 'deaf') return
     if (isEcho(text, speakingNow())) {
@@ -768,6 +781,9 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     for (let i = e.resultIndex; i < e.results.length; i++) {
       const chunk = e.results[i][0].transcript as string
       const words = chunk.split(/\s+/).filter(Boolean)
+      latest.set(i, chunk)
+      const done = consumed.get(i) ?? 0
+      if (words.length <= done) continue
       // While his voice is coming out of the speakers, what the mic hears is
       // him unless it is a real interruption. Remember how much of this phrase
       // was heard then: its final transcript often lands after he finishes.
@@ -776,12 +792,12 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
         drop('his own voice, heard while speaking')
         continue
       }
-      let text = chunk
+      let text = words.slice(done).join(' ')
       const his = own.get(i)
       if (his && !interrupts(chunk, his.spoken)) {
         // Only what came after him is the user — someone answering the moment
         // he stops lands in the same phrase as the tail of his voice.
-        text = words.slice(his.words).join(' ')
+        text = words.slice(Math.max(done, his.words)).join(' ')
         if (!text || isEcho(text, `${his.spoken} ${speakingNow()}`)) {
           drop('his own voice, heard while speaking')
           continue
@@ -803,6 +819,7 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
         lastWake = Date.now()
         diag.wakes++
         const trailing = afterWake(heard)
+        consumeAll()
         reset()
         h.onWake(trailing)
       } else if (settled.length > 400) {
@@ -814,25 +831,21 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     settled += fresh
     const full = `${settled} ${interim}`.replace(/\s+/g, ' ').trim()
     if (!started || (mode === 'guard' && !barged)) {
-      const words = full.split(/\s+/).filter(Boolean).length
       if (mode === 'guard') {
-        // An override word cuts through everything below it — "stop" has to
-        // work on the first syllable or it is not a stop button.
-        if (!OVERRIDE.test(full)) {
-          // His own first syllable, same as the premium path. This engine has
-          // no energy gate, so without the clock the only defence is the word
-          // count below, and a single clear word is exactly what leaks first.
-          const since = speakingSince()
-          if (since && Date.now() - since < SELF_GUARD_MS) {
-            diag.selfGuarded++
-            return
-          }
-          // Two words before this engine believes an interruption. The energy
-          // path can be instant because it triggers on loudness the canceller
-          // has already had a pass at; here the evidence is a transcript of
-          // audio that includes his own playback, and one word of that is not
-          // evidence of anything.
-          if (words < 2) return
+        // Mientras piensa o habla, este motor oye su propia voz por los
+        // altavoces y la transcribe con retraso: dos palabras suyas bastaban
+        // para cortarle a mitad de frase y luego contestarse a sí mismo. Solo
+        // corta su nombre o una orden de parada que no esté diciendo él, y lo
+        // demás se descarta en vez de acumularse para el turno siguiente.
+        const since = speakingSince()
+        const ownStart = since > 0 && Date.now() - since < SELF_GUARD_MS
+        if (ownStart || !interrupts(full, speakingNow())) {
+          diag.selfGuarded++
+          consumeAll()
+          settled = ''
+          interim = ''
+          drop('heard while he was answering')
+          return
         }
       }
       started = true
@@ -851,6 +864,8 @@ function startBrowserVoice(h: VoiceHandlers): Voice {
     if (stopped || running) return
     rec = new Ctor()
     own = new Map()
+    consumed = new Map()
+    latest = new Map()
     rec.continuous = true
     rec.interimResults = true
     rec.lang = persona().lang

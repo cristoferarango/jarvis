@@ -14,7 +14,7 @@ import asyncio
 import importlib.util
 import logging
 import threading
-from collections.abc import AsyncIterator
+from collections.abc import AsyncIterator, Awaitable, Callable
 from typing import Any
 
 import httpx
@@ -67,8 +67,16 @@ def _ext_for(content_type: str) -> str:
 
 
 def speech_router(
-    settings: Settings, brain: Any, cloned: ClonedVoiceService | None = None
+    settings: Settings,
+    brain: Any,
+    cloned: ClonedVoiceService | None = None,
+    *,
+    require: Callable[[Request, str], Awaitable[None]] | None = None,
 ) -> APIRouter:
+    """``require(request, límite)`` valida el token de sesión y el límite de frecuencia.
+
+    La aplicación siempre lo pasa; sin él (pruebas del router aislado) no hay control.
+    """
     router = APIRouter()
     voz = settings.voz
     whisper = (
@@ -77,7 +85,8 @@ def speech_router(
     language = settings.asistente.idioma.split("-")[0].lower()
 
     def eleven_key() -> str:
-        return voz.elevenlabs_api_key
+        # Con clave pero sin habilitar, ElevenLabs no existe: nada sale del equipo.
+        return voz.elevenlabs_api_key if voz.elevenlabs_habilitado else ""
 
     @router.get("/health")
     async def health() -> dict[str, Any]:
@@ -103,6 +112,8 @@ def speech_router(
 
     @router.post("/tts")
     async def tts(request: Request) -> Response:
+        if require is not None:
+            await require(request, "tts")
         key = eleven_key()
         use_cloned = cloned is not None and await cloned.available()
         if not key and not use_cloned:
@@ -169,6 +180,8 @@ def speech_router(
 
     @router.post("/stt")
     async def stt(request: Request) -> Response:
+        if require is not None:
+            await require(request, "stt")
         key = eleven_key()
         if not key and whisper is None:
             return Response("sin transcriptor en el núcleo", status_code=503)

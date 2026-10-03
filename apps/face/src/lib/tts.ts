@@ -1,4 +1,5 @@
-import { TTS_ENGINE, KOKORO_VOICE, CORE_HTTP_URL } from '../config'
+import { TTS_ENGINE, KOKORO_VOICE } from '../config'
+import { authFetch } from './auth'
 import * as kokoro from './kokoro'
 import { caps, ttsLabel } from './capabilities'
 import { persona } from './persona'
@@ -48,7 +49,9 @@ let recentUntil = 0
 
 /** Recognition lags the speakers by a few hundred milliseconds, so a sentence
  *  keeps arriving at the microphone well after it has finished playing. */
-const ECHO_TAIL_MS = 1800
+const ECHO_TAIL_MS = 3500
+/** Cuánto de lo ya dicho se recuerda para reconocer su eco (varias frases). */
+const ECHO_MEMORY_CHARS = 800
 
 /**
  * Why you cannot hear him.
@@ -115,7 +118,8 @@ function setSpeaking(text: string) {
     return
   }
   if (speaking) {
-    recent = speaking
+    const still = Date.now() < recentUntil ? recent : ''
+    recent = `${still} ${speaking}`.trim().slice(-ECHO_MEMORY_CHARS)
     recentUntil = Date.now() + ECHO_TAIL_MS
   }
   speaking = ''
@@ -144,7 +148,7 @@ export function speakingNow(): string {
  */
 let audible = false
 let audibleUntil = 0
-const AUDIBLE_TAIL_MS = 500
+const AUDIBLE_TAIL_MS = 1000
 
 function setAudible(on: boolean) {
   if (!on && audible) audibleUntil = Date.now() + AUDIBLE_TAIL_MS
@@ -819,7 +823,7 @@ const coreEngine = () => (caps().ttsEngine === 'clonada' ? 'clonada' : 'elevenla
 async function fetchCloudAudio(text: string): Promise<string | null> {
   if (!caps().tts) return null
   try {
-    const res = await fetch(`${CORE_HTTP_URL}/tts`, {
+    const res = await authFetch('/tts', {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
       body: JSON.stringify({ text }),

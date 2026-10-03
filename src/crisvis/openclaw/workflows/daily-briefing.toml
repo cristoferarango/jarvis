@@ -1,0 +1,143 @@
+# Flujo declarativo del informe del día. Lo valida crisvis.openclaw.workflow.
+# Solo lee: `acciones_externas` tiene que ser false y el validador lo exige.
+
+id = "daily-briefing"
+version = 1
+descripcion = "Informe del día: consulta las fuentes en paralelo, clasifica alertas y lo resume en voz."
+acciones_externas = false
+
+# Frases (sin tildes ni mayúsculas) que lanzan el informe. Más el botón de la cara.
+disparadores = [
+    "buenos dias",
+    "informe del dia",
+    "dame mi informe",
+    "dame el informe",
+    "mi informe",
+    "que tengo hoy",
+    "que tengo para hoy",
+]
+
+pasos = [
+    "registrar_solicitud",
+    "consultar_fuentes",
+    "normalizar",
+    "clasificar_alertas",
+    "resumen_de_voz",
+    "mostrar_panel",
+    "guardar_auditoria",
+]
+
+[parametros]
+zona_horaria = "America/Lima"
+detalle = "standard"
+timeout_global = 20.0
+timeout_fuente = 6.0
+dry_run = true
+
+# Cuántos elementos enseña cada fuente según el detalle.
+[elementos_por_detalle]
+quick = 3
+standard = 8
+complete = 50
+
+# Qué fuentes alimentan cada pestaña. Resumen e Integraciones las calcula el adaptador.
+[pestanas]
+resumen = []
+correo = ["correo"]
+agenda = ["agenda"]
+tareas = ["tareas"]
+proyectos = ["github", "gitlab"]
+negocio = ["crm"]
+documentos = ["documentos"]
+sistema = ["sistema", "docker"]
+automatizaciones = ["n8n"]
+integraciones = []
+
+# Reglas de alerta: si el campo `campo` del elemento cumple la condición, se
+# levanta una alerta del nivel indicado. {title} y {subtitle} se sustituyen.
+
+[[alertas]]
+fuente = "correo"
+campo = "prioridad"
+igual = "alta"
+y_campo = "leido"
+y_igual = false
+nivel = "HIGH"
+titulo = "Correo prioritario: {title}"
+
+[[alertas]]
+fuente = "agenda"
+campo = "minutos_para"
+entre = [0, 60]
+nivel = "HIGH"
+titulo = "Reunión en menos de una hora: {title}"
+
+[[alertas]]
+fuente = "agenda"
+campo = "minutos_para"
+entre = [61, 720]
+nivel = "INFO"
+titulo = "Reunión hoy: {title}"
+
+[[alertas]]
+fuente = "tareas"
+campo = "vencida"
+igual = true
+nivel = "MEDIUM"
+titulo = "Tarea vencida: {title}"
+
+[[alertas]]
+fuente = "gitlab"
+campo = "estado"
+igual = "failed"
+nivel = "HIGH"
+titulo = "Pipeline fallido: {title}"
+
+[[alertas]]
+fuente = "github"
+campo = "estado"
+igual = "failed"
+nivel = "HIGH"
+titulo = "Fallo en GitHub: {title}"
+
+[[alertas]]
+fuente = "sistema"
+campo = "estado"
+igual = "critical"
+nivel = "CRITICAL"
+titulo = "Sistema: {title} ({subtitle})"
+
+[[alertas]]
+fuente = "sistema"
+campo = "estado"
+igual = "warn"
+nivel = "MEDIUM"
+titulo = "Sistema: {title} ({subtitle})"
+
+[[alertas]]
+fuente = "docker"
+campo = "estado"
+igual = "exited"
+nivel = "LOW"
+titulo = "Contenedor parado: {title}"
+
+[[alertas]]
+fuente = "n8n"
+campo = "estado"
+igual = "error"
+nivel = "HIGH"
+titulo = "Flujo n8n con error: {title}"
+
+[[alertas]]
+fuente = "crm"
+campo = "sla_vencido"
+igual = true
+nivel = "HIGH"
+titulo = "Cliente esperando fuera de plazo: {title}"
+
+[[alertas]]
+fuente = "documentos"
+campo = "compartido"
+igual = true
+nivel = "INFO"
+titulo = "Documento compartido modificado: {title}"

@@ -168,3 +168,16 @@ configurado. `crisvis doctor` informa de su estado.
 `packages/protocol/frames.json` es la fuente única de los tipos de trama.
 `npm test` comprueba que los tipos TypeScript coinciden y `pytest` que la lista
 Python también. Cambiar una trama exige tocar los tres sitios a la vez.
+
+## Informe diario y OpenClaw
+
+`src/crisvis/openclaw/` contiene el `OpenClawAdapter`: el informe diario
+(«Buenos días», «Informe del día», botón INFORME), la política de acciones con
+aprobación exacta y el cliente del Gateway de OpenClaw en loopback. Los
+documentos de referencia:
+
+- `CRISVIS_OPENCLAW_ARCHITECTURE.md`: módulos, flujos, tramas, procesos y puertos.
+- `SECURITY_MODEL.md`: fronteras, niveles de riesgo, secretos y la checklist
+  previa a conectar cuentas.
+- `CONNECTOR_MATRIX.md`, `INTEGRATION_PLAN.md`, `RISK_REGISTER.md` y
+  `OPENCLAW_AUDIT.md`.

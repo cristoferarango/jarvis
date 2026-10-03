@@ -1,5 +1,6 @@
 import { useStore } from '../store'
 import type { ConfirmRequest } from './brain'
+import { voiceCanApprove } from './guardrails'
 
 /**
  * Peticiones de permiso a la espera del usuario.
@@ -7,9 +8,14 @@ import type { ConfirmRequest } from './brain'
  * El núcleo ya decidió que esta acción necesita un sí explícito; aquí solo se
  * recoge, por botón o por voz. Una sola a la vez: si llega otra, la anterior se
  * da por denegada. Si nadie contesta antes del plazo del núcleo, también.
+ *
+ * Cada petición es una acción: el sí no se reutiliza para la siguiente. Las de
+ * riesgo alto no se aprueban de viva voz (un eco o una palabra suelta del
+ * micrófono no debe bastar): hace falta el botón o Intro. Negar vale siempre.
  */
 
 let resolver: ((approved: boolean) => void) | null = null
+let pendingRisk: ConfirmRequest['risk'] | null = null
 
 export function requestConfirm(req: ConfirmRequest): Promise<boolean> {
   answerConfirm(false)
@@ -19,21 +25,28 @@ export function requestConfirm(req: ConfirmRequest): Promise<boolean> {
       if (resolver !== settle) return
       window.clearTimeout(timer)
       resolver = null
+      pendingRisk = null
       useStore.getState().setConfirm(null)
       resolve(approved)
     }
     resolver = settle
+    pendingRisk = req.risk
     useStore.getState().setConfirm({
       id: req.id,
       tool: req.tool,
       tier: req.tier,
+      risk: req.risk,
       summary: req.summary,
+      warning: req.warning,
+      target: req.target,
+      cancellable: req.cancellable,
       deadline: Date.now() + req.seconds * 1000,
     })
   })
 }
 
-export function answerConfirm(approved: boolean): void {
+export function answerConfirm(approved: boolean, opts: { voice?: boolean } = {}): void {
+  if (approved && opts.voice && !voiceCanApprove(pendingRisk)) return
   resolver?.(approved)
 }
 

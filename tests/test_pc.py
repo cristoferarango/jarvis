@@ -47,13 +47,14 @@ def test_urls_are_told_apart_from_apps_and_paths() -> None:
 def test_every_pc_tool_has_a_deliberate_tier() -> None:
     tools = pc_tools(see=None)
     names = {t.spec.name for t in tools}
-    assert len(names) == len(tools) == 14
+    assert len(names) == len(tools) == 15
     tiers = {name: classify(name) for name in names}
     assert tiers["pc_inspect"] is Tier.LECTURA
     assert tiers["pc_screen"] is Tier.LECTURA
     assert tiers["pc_media"] is Tier.INTERFAZ
     assert tiers["pc_click"] is Tier.ESCRITURA
     assert tiers["pc_type"] is Tier.ESCRITURA
+    assert tiers["pc_youtube"] is Tier.ESCRITURA
     assert tiers["pc_kill"] is Tier.PELIGROSO
     assert tiers["pc_power"] is Tier.PELIGROSO
 
@@ -91,32 +92,18 @@ def test_confirmations_read_as_plain_spanish() -> None:
     assert summarise("pc_kill", {"process": "chrome"}) == "Forzar el cierre de chrome"
 
 
-async def test_one_yes_covers_the_rest_of_the_pc_steps() -> None:
+async def test_each_pc_step_needs_its_own_yes(tmp_path: Path) -> None:
+    # R-16: antes un "sí" cubría el resto de la cadena. Ahora cada acción que
+    # cambia algo pide su propia aprobación.
     from types import SimpleNamespace
 
-    from crisvis.gateway.session import Session
+    from gate_helpers import GateSession
 
-    asked: list[str] = []
-
-    class FakeSession:
-        _pc_granted = False
-        _answering = None
-        id = "sesion-de-prueba"
-        registry = SimpleNamespace(
-            policy=PermissionPolicy(PermissionSettings(modo="confirmar")),
-            audit=SimpleNamespace(record=lambda **_kw: None),
-            settings=SimpleNamespace(permisos=SimpleNamespace(segundos_confirmacion=5)),
-        )
-
-        async def ask_face(self, _kind: str, payload: dict, _seconds: float) -> dict:
-            asked.append(payload["tool"])
-            return {"approved": True}
-
-    session = FakeSession()
-    spec = SimpleNamespace(requires_confirmation=False)
-    gate = Session.gate
-    assert await gate(session, "pc_open", {"target": "bloc de notas"}, spec) is None
-    assert await gate(session, "pc_click", {"element": 3}, spec) is None
-    assert await gate(session, "pc_type", {"text": "hola"}, spec) is None
-    assert await gate(session, "pc_power", {"action": "shutdown"}, spec) is None
-    assert asked == ["pc_open", "pc_power"]
+    session = GateSession(tmp_path, mode="confirmar")
+    spec = SimpleNamespace(requires_confirmation=False, timeout_seconds=30)
+    assert await session.gate("pc_open", {"target": "bloc de notas"}, spec) is None
+    assert await session.gate("pc_click", {"element": 3}, spec) is None
+    assert await session.gate("pc_type", {"text": "hola"}, spec) is None
+    assert await session.gate("pc_power", {"action": "shutdown"}, spec) is None
+    assert [p["tool"] for p in session.asked] == ["pc_open", "pc_click", "pc_type", "pc_power"]
+    assert len({p["grant"] for p in session.asked}) == 4

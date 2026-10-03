@@ -517,6 +517,7 @@ class OpenJarvisBrain:
         visible: Callable[[str], bool] = lambda _name: True,
         gate: Any = None,
         query: str = "",
+        hooks: Any = None,
     ) -> Any:
         """Un agente para un turno.
 
@@ -524,6 +525,7 @@ class OpenJarvisBrain:
         aplicaciones conectadas que tienen que ver con ella; sin ella, todas.
         """
         from crisvis.brain.agent import CrisvisVoiceAgent
+        from crisvis.brain.persona import language_reminder
 
         if not self.connect_engine():
             raise BrainUnavailable(self._status.message)
@@ -531,7 +533,14 @@ class OpenJarvisBrain:
         remote = [t for t in self._connectors.tools() if visible(t.spec.name)]
         if query:
             remote = select_mcp_tools(query, remote, b.mcp_max_herramientas)
-        tools = [t for t in [*self._tools, *extra_tools] if visible(t.spec.name)]
+        extra = list(extra_tools)
+        # Las herramientas de la sesión sustituyen a las homónimas del cerebro
+        # (p. ej. el shell_exec cancelable en lugar del de OpenJarvis).
+        own = {t.spec.name for t in extra}
+        tools = [
+            t for t in [*(t for t in self._tools if t.spec.name not in own), *extra]
+            if visible(t.spec.name)
+        ]
         taken = {t.spec.name for t in tools}
         tools += [t for t in remote if t.spec.name not in taken]
         names = [t.spec.name for t in tools]
@@ -551,10 +560,12 @@ class OpenJarvisBrain:
             max_tokens=b.max_tokens,
             system_prompt=self.system_prompt(names),
             gate=gate,
+            hooks=hooks,
             engine_options=options,
             think=think,
             capability_policy=getattr(self._security, "capability_policy", None),
             rate_limiter=getattr(self._security, "rate_limiter", None),
+            language_reminder=language_reminder(self.settings.asistente.idioma),
         )
 
     def context_for(self, text: str, history: Iterable[tuple[str, str]]) -> Any:

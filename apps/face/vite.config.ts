@@ -9,12 +9,35 @@ const CORE = process.env.CRISVIS_CORE ?? 'http://127.0.0.1:8787'
  *  siempre URLs relativas al mismo origen, igual que en producción. */
 const CORE_ROUTES = ['/health', '/tts', '/stt', '/img', '/media', '/page', '/file', '/api']
 
+/**
+ * CSP solo de desarrollo. Igual que la de producción (src/crisvis/security/
+ * headers.py) salvo 'unsafe-inline' en scripts, que necesita el preámbulo de
+ * React Fast Refresh, y el WebSocket de recarga en caliente de Vite. Nunca llega
+ * al build: la página compilada la sirve el núcleo con su propia cabecera.
+ */
+const DEV_CSP = [
+  "default-src 'self'",
+  "base-uri 'self'",
+  "object-src 'none'",
+  "frame-ancestors 'none'",
+  "form-action 'self'",
+  "script-src 'self' 'unsafe-inline' 'wasm-unsafe-eval'",
+  "style-src 'self' 'unsafe-inline' https://fonts.googleapis.com",
+  "font-src 'self' data: https://fonts.gstatic.com",
+  "img-src 'self' data: blob:",
+  "media-src 'self' data: blob:",
+  "connect-src 'self' data: blob: ws://localhost:* ws://127.0.0.1:* https://storage.googleapis.com",
+  "worker-src 'self' blob:",
+  "frame-src 'self' https://www.youtube-nocookie.com https://www.youtube.com https://player.vimeo.com",
+].join('; ')
+
 export default defineConfig({
   plugins: [react()],
   server: {
     // El núcleo acepta orígenes localhost:5173-5199 en desarrollo.
     port: Number(process.env.PORT) || 5173,
     strictPort: false,
+    headers: { 'Content-Security-Policy': DEV_CSP },
     proxy: {
       '/ws': { target: CORE, ws: true, changeOrigin: false },
       ...Object.fromEntries(CORE_ROUTES.map((r) => [r, { target: CORE, changeOrigin: false }])),

@@ -20,6 +20,10 @@ else:  # pragma: no cover
     import tomli as tomllib
 
 PERMISSION_MODES = ("lectura", "confirmar", "libre")
+# Modos que se pueden fijar en la configuración o desde la interfaz. LIBRE solo
+# existe como habilitación temporal de administración (crisvis permisos libre).
+PERSISTENT_MODES = ("lectura", "confirmar")
+CLIPBOARD_MODES = ("confirmar", "deshabilitado")
 
 
 @dataclass
@@ -124,6 +128,9 @@ class VoiceSettings:
     clonada: bool = True
     clonada_puerto: int = 8788
     clonada_carpeta: str = ""
+    # ElevenLabs envía texto y audio fuera del equipo y cuesta dinero: no se usa
+    # aunque haya clave hasta que se habilite aquí de forma explícita.
+    elevenlabs_habilitado: bool = False
     elevenlabs_api_key: str = ""
     elevenlabs_voz: str = "JBFqnCBsd6RMkjVDRZzb"
     # Transcripción local con faster-whisper si el extra `voz-local` está instalado.
@@ -132,9 +139,66 @@ class VoiceSettings:
 
 
 @dataclass
+class SecuritySettings:
+    # Lectura del portapapeles: "confirmar" (cada lectura se aprueba aparte) o
+    # "deshabilitado" (la herramienta ni se ofrece).
+    portapapeles: str = "confirmar"
+    # Duración máxima de una habilitación temporal de LIBRE.
+    libre_max_minutos: int = 30
+    # Vida del token de sesión de la interfaz.
+    sesion_minutos: int = 15
+    # Rutas exactas de programas que pc_open puede abrir aunque sean ejecutables.
+    apps_permitidas: list[str] = field(default_factory=list)
+    tts_por_minuto: int = 40
+    stt_por_minuto: int = 30
+    max_conexiones: int = 6
+    # Kokoro (voz neuronal en el navegador, solo inglés) descarga modelos de
+    # Hugging Face: solo con esto activo se abre connect-src a ese dominio.
+    csp_kokoro: bool = False
+
+
+@dataclass
 class MediaSettings:
     # Carpetas extra desde las que /file puede servir imágenes.
     carpetas: list[str] = field(default_factory=list)
+
+
+@dataclass
+class OpenClawSettings:
+    # Adaptador local entre la cara y OpenClaw (crisvis.openclaw). La cara nunca
+    # habla con OpenClaw directamente: todo pasa por aquí.
+    habilitado: bool = True
+    # Modo simulación global: ninguna acción externa se ejecuta, solo se registra.
+    # También se activa con DRY_RUN=true en el entorno; no se puede desactivar
+    # desde la interfaz.
+    dry_run: bool = True
+    # Gateway de OpenClaw. Solo se acepta una dirección de loopback.
+    gateway_url: str = "http://127.0.0.1:18789"
+    # Ruta a la CLI `openclaw`. Vacío = la del PATH.
+    cli: str = ""
+    # Cómo saluda el informe ("Buenos días, Cristofer"). Vacío = el tratamiento.
+    usuario: str = ""
+    zona_horaria: str = "America/Lima"
+    # quick | standard | complete
+    detalle: str = "standard"
+    # Fuentes del informe. Vacío = todas.
+    fuentes: list[str] = field(default_factory=list)
+    timeout_global: float = 20.0
+    timeout_fuente: float = 6.0
+    # Fallos que simulan las fuentes de prueba, p. ej. {"n8n" = "timeout"}.
+    # Valores: timeout | unauthorized | unavailable | error | partial.
+    simular_fallos: dict[str, str] = field(default_factory=lambda: {"n8n": "timeout"})
+    # Nivel LOW (guardar un resumen en la carpeta sandbox, borradores locales).
+    permitir_bajo: bool = False
+    # Nivel CRITICAL: bloqueado salvo habilitación manual aquí.
+    critico_habilitado: bool = False
+    segundos_aprobacion: int = 120
+    max_informes_por_minuto: int = 6
+    # Páginas que se abren solas en el navegador, una tras otra, al pedir el
+    # informe. Solo https. Vacío (por defecto) = no abrir nada; cada sitio se
+    # abre cuando el usuario lo pide.
+    abrir_al_informe: list[str] = field(default_factory=list)
+    abrir_intervalo: float = 1.5
 
 
 @dataclass
@@ -146,6 +210,8 @@ class Settings:
     permisos: PermissionSettings = field(default_factory=PermissionSettings)
     voz: VoiceSettings = field(default_factory=VoiceSettings)
     medios: MediaSettings = field(default_factory=MediaSettings)
+    openclaw: OpenClawSettings = field(default_factory=OpenClawSettings)
+    seguridad: SecuritySettings = field(default_factory=SecuritySettings)
 
     @property
     def brain_home(self) -> Path:
@@ -154,6 +220,26 @@ class Settings:
     @property
     def audit_path(self) -> Path:
         return self.home / "auditoria.jsonl"
+
+    @property
+    def adapter_audit_path(self) -> Path:
+        return self.home / "auditoria-adaptador.jsonl"
+
+    @property
+    def sandbox_path(self) -> Path:
+        return self.home / "sandbox"
+
+    @property
+    def permissions_state_path(self) -> Path:
+        return self.home / "permisos.json"
+
+    @property
+    def admin_token_path(self) -> Path:
+        return self.home / "admin.token"
+
+    @property
+    def input_telemetry_path(self) -> Path:
+        return self.home / "telemetria-entradas.jsonl"
 
     def public_dict(self) -> dict[str, Any]:
         """Lo que se puede mostrar sin filtrar secretos."""
@@ -232,10 +318,27 @@ def load_settings(path: Path | None = None) -> Settings:
         settings.permisos.modo = env["CRISVIS_PERMISOS"]
     if env.get("ELEVENLABS_API_KEY") and not settings.voz.elevenlabs_api_key:
         settings.voz.elevenlabs_api_key = env["ELEVENLABS_API_KEY"]
+    # DRY_RUN solo puede endurecer: "true" lo activa, nada lo apaga desde fuera.
+    if env.get("DRY_RUN", "").strip().lower() in ("1", "true", "yes", "si", "sí"):
+        settings.openclaw.dry_run = True
 
     if settings.permisos.modo not in PERMISSION_MODES:
         raise ValueError(
             f"permisos.modo='{settings.permisos.modo}' no es uno de {', '.join(PERMISSION_MODES)}"
+        )
+    if settings.permisos.modo == "libre":
+        # Migración: LIBRE ya no se puede dejar fijo en la configuración ni en el
+        # entorno. Se arranca en CONFIRMAR y LIBRE se habilita con caducidad.
+        print(
+            "[crisvis] permisos.modo='libre' ya no se admite al arrancar; se usa 'confirmar'. "
+            "LIBRE se habilita temporalmente con `crisvis permisos libre`.",
+            file=sys.stderr,
+        )
+        settings.permisos.modo = "confirmar"
+    if settings.seguridad.portapapeles not in CLIPBOARD_MODES:
+        raise ValueError(
+            f"seguridad.portapapeles='{settings.seguridad.portapapeles}' no es uno de "
+            f"{', '.join(CLIPBOARD_MODES)}"
         )
     return settings
 
@@ -294,7 +397,8 @@ memoria = true
 mcp_max_herramientas = 12
 
 [permisos]
-# lectura | confirmar | libre
+# lectura | confirmar. LIBRE no se fija aquí: se habilita unos minutos con
+# `crisvis permisos libre` y vuelve solo a CONFIRMAR.
 modo = "confirmar"
 permitir = []
 confirmar = []
@@ -308,9 +412,34 @@ estilo = "original"
 clonada = true
 clonada_puerto = 8788
 clonada_carpeta = ""
-# Clave opcional de ElevenLabs (mejor voz y transcripción). También vale la
-# variable de entorno ELEVENLABS_API_KEY.
+# ElevenLabs (opcional, en la nube y de pago): solo se usa con habilitado = true.
+# La clave también vale en la variable de entorno ELEVENLABS_API_KEY.
+elevenlabs_habilitado = false
 elevenlabs_api_key = ""
 whisper_local = true
 whisper_modelo = "small"
+
+[seguridad]
+# Lectura del portapapeles: "confirmar" (cada vez) o "deshabilitado".
+portapapeles = "confirmar"
+libre_max_minutos = 30
+
+[openclaw]
+# Adaptador local hacia OpenClaw (solo loopback). Ver docs/SECURITY_MODEL.md.
+habilitado = true
+# Simulación global: ninguna acción externa se ejecuta.
+dry_run = true
+gateway_url = "http://127.0.0.1:18789"
+# Nombre con el que saluda el informe del día ("Buenos días, Cristofer").
+usuario = ""
+zona_horaria = "America/Lima"
+# quick | standard | complete
+detalle = "standard"
+timeout_global = 20.0
+timeout_fuente = 6.0
+# Páginas que se abren solas al pedir el informe (solo https). Vacío = ninguna;
+# cada sitio se abre cuando se pide. Ejemplo:
+# abrir_al_informe = ["https://mail.google.com/", "https://www.youtube.com/"]
+abrir_al_informe = []
+abrir_intervalo = 1.5
 """

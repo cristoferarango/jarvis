@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-PROTOCOL_VERSION = 1
+PROTOCOL_VERSION = 2
 
-CLIENT_FRAMES = ("hello", "ask", "interrupt", "reply", "permissions")
+CLIENT_FRAMES = ("hello", "ask", "interrupt", "reply", "briefing", "propose")
 CORE_FRAMES = (
     "ready",
     "status",
@@ -17,4 +17,9 @@ CORE_FRAMES = (
     "ui",
     "capture",
     "confirm",
+    "briefing",
+    "approval",
+    "outcome",
+    "cancel",
+    "input",
 )

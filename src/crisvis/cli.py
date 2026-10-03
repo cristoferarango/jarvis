@@ -6,6 +6,8 @@ crisvis doctor          comprueba motor, modelos, interfaz y voz
 crisvis preguntar TEXTO una pregunta por terminal, sin interfaz
 crisvis voz [AUDIO...]  usa esos audios como muestra de la voz clonada
 crisvis voz --preparar CARPETA   limpia y une muchos clips en una sola muestra
+crisvis permisos libre [--minutos N]   LIBRE (acción de administración; 0 = sin caducidad)
+crisvis permisos confirmar             volver a CONFIRMAR
 """
 
 from __future__ import annotations
@@ -255,13 +257,23 @@ def cmd_ask(args: argparse.Namespace) -> int:
         print(status.message, file=sys.stderr)
         return 1
 
+    from crisvis.security.guard import Risk, SequenceGuard, assess
+
+    sequence = SequenceGuard()
+
     async def gate(name: str, call_args: dict, spec: object) -> str | None:
         verdict = policy.evaluate(name)
         decision = verdict.decision
-        if decision is Decision.ALLOW and getattr(spec, "requires_confirmation", False):
+        risk = sequence.check(name, call_args) or assess(name, call_args, verdict.tier)
+        if risk.blocked:
+            return f"Bloqueado por la política de seguridad: {risk.reason}."
+        if decision is Decision.ALLOW and (
+            getattr(spec, "requires_confirmation", False) or risk.risk is Risk.HIGH
+        ):
             decision = Decision.CONFIRM
         if decision is Decision.DENY:
             return f"Bloqueado por el modo de permisos ({policy.mode})."
+        sequence.commit(name, call_args, risk.risk)
         if decision is Decision.CONFIRM:
             answer = await asyncio.to_thread(input, f"\n¿Permitir {name} {call_args}? [s/N] ")
             if answer.strip().lower() not in ("s", "si", "sí", "y", "yes"):
@@ -284,6 +296,67 @@ def cmd_ask(args: argparse.Namespace) -> int:
         asyncio.run(run())
     finally:
         brain.close()
+    return 0
+
+
+def cmd_permissions(args: argparse.Namespace) -> int:
+    """Administración del modo: solo desde una terminal del propio usuario.
+
+    Lee el token de administración de <home>/admin.token (lo escribe el núcleo al
+    arrancar) y habla con el núcleo en loopback. El navegador no puede hacerlo.
+    """
+    import getpass
+    import json
+
+    import httpx
+
+    from crisvis.security.modes import LIBRE_PHRASE
+
+    settings = load_settings(_config_path(args))
+    port = args.port or settings.servidor.port
+    base = f"http://127.0.0.1:{port}"
+    try:
+        token = settings.admin_token_path.read_text(encoding="utf-8").strip()
+    except OSError:
+        print("El núcleo no está en marcha (no hay admin.token).", file=sys.stderr)
+        return 1
+    headers = {"x-crisvis-admin": token}
+
+    if args.accion == "estado":
+        state = settings.permissions_state_path
+        print(f"Persistido: {state.read_text(encoding='utf-8') if state.exists() else '(nada)'}")
+        return 0
+    if args.accion == "confirmar":
+        res = httpx.post(f"{base}/api/admin/confirmar", headers=headers, timeout=10)
+    else:
+        print(
+            "\n  ATENCIÓN: en LIBRE el asistente escribe archivos y abre aplicaciones sin "
+            "preguntar.\n  Teclado, ratón, portapapeles, órdenes y acciones de sistema se siguen "
+            "aprobando una a una;\n  lo bloqueado por política sigue bloqueado.\n"
+            + (
+                f"  Caduca a los {args.minutos} minutos y al reiniciar vuelve a CONFIRMAR.\n"
+                if args.minutos
+                else "  Sin caducidad: dura hasta `crisvis permisos confirmar` o reiniciar.\n"
+            )
+        )
+        typed = input(f"  Escribe «{LIBRE_PHRASE}» para continuar: ").strip()
+        if typed != LIBRE_PHRASE:
+            print("Cancelado.")
+            return 1
+        res = httpx.post(
+            f"{base}/api/admin/libre",
+            headers=headers,
+            json={
+                "minutos": args.minutos,
+                "confirmacion": typed,
+                "quien": f"cli:{getpass.getuser()}",
+            },
+            timeout=10,
+        )
+    if res.status_code != 200:
+        print(f"Rechazado ({res.status_code}): {res.text}", file=sys.stderr)
+        return 1
+    print(json.dumps(res.json(), ensure_ascii=False))
     return 0
 
 
@@ -322,6 +395,11 @@ def build_parser() -> argparse.ArgumentParser:
 
     p = sub.add_parser("iniciar", help="Arrancar (lo mismo que sin orden)")
     p.set_defaults(func=cmd_run)
+
+    p = sub.add_parser("permisos", help="Administrar el modo de permisos (LIBRE temporal)")
+    p.add_argument("accion", choices=["libre", "confirmar", "estado"])
+    p.add_argument("--minutos", type=float, default=10)
+    p.set_defaults(func=cmd_permissions)
     return parser
 
 

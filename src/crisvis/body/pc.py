@@ -7,7 +7,10 @@ sus controles (juegos, lienzos, vídeo), ``pc_screen`` la mira con el modelo de
 visión y ``pc_click`` con ``target`` localiza el punto en la captura.
 
 Cada herramienta tiene su nivel en la política de permisos: mirar es lectura,
-tocar es escritura, apagar o matar procesos es peligroso.
+tocar es escritura, apagar o matar procesos es peligroso. Además, cada acción
+que toca el teclado, el ratón o lanza programas vuelve a comprobarse aquí, en
+el momento de ejecutarse, contra las reglas de ``crisvis.security.guard``: el
+teclado y el ratón nunca sirven para llegar a una consola.
 """
 
 from __future__ import annotations
@@ -30,6 +33,13 @@ from crisvis.body.desktop import (
     resolve_path,
     short,
     volume,
+)
+from crisvis.security.guard import (
+    app_name_allowed,
+    is_shell_window,
+    keys_assessment,
+    looks_like_command,
+    open_assessment,
 )
 
 # (imagen_base64, pregunta) -> respuesta
@@ -100,7 +110,66 @@ def _describe(desk: Desktop) -> str:
     return "\n".join(lines)
 
 
-def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
+_EXTRA_SECRETS = [
+    re.compile(r"\b(?:\d[ -]?){13,19}\b"),  # tarjetas
+    re.compile(r"\b[A-Za-z0-9+/_=-]{32,}\b"),  # claves y tokens largos
+    re.compile(r"(?i)\b(contrase[nñ]a|clave|pin|cvv|iban)\s*[=:]\s*\S+"),
+]
+
+
+def mask_secrets(text: str, limit: int = 1500) -> str:
+    from crisvis.openclaw.redact import redact_text
+
+    for pattern in _EXTRA_SECRETS:
+        text = pattern.sub("***", text)
+    return redact_text(text, limit)
+
+
+def _shell_target(desk: Desktop) -> str | None:
+    """Motivo para no tocar la ventana objetivo, o None si es segura."""
+    if not WINDOWS:
+        return None
+    win = desk.target()
+    if win is not None and is_shell_window(win.title, win.process):
+        return (
+            f"Bloqueado por política: la ventana «{win.label}» es una consola, un lanzador o una "
+            "herramienta de sistema; el teclado y el ratón no se usan ahí. Si hace falta una "
+            "orden, usa shell_exec, que se aprueba aparte."
+        )
+    return None
+
+
+def clipboard_tool() -> FaceTool:
+    """Leer el portapapeles: HIGH, aprobación cada vez, contenido enmascarado y sin registrar."""
+
+    def read(_args: dict[str, Any]) -> Any:
+        import pyperclip
+
+        text = pyperclip.paste() or ""
+        if not text:
+            return ok("read_clipboard", "El portapapeles está vacío.")
+        masked = mask_secrets(short(text, 4000))
+        return ok(
+            "read_clipboard",
+            f"Portapapeles ({len(text)} caracteres; los posibles secretos se muestran como ***): "
+            f"«{masked}»",
+        )
+
+    return FaceTool(
+        "read_clipboard",
+        "Lee el portapapeles del PC. Solo si el usuario lo pide expresamente; cada lectura se "
+        "aprueba aparte.",
+        schema({}),
+        _guard("read_clipboard", read),
+        category="pc",
+        timeout=10,
+        requires_confirmation=True,
+    )
+
+
+def pc_tools(
+    see: SeeFn | None, desk: Desktop = DESKTOP, apps: tuple[str, ...] = ()
+) -> list[FaceTool]:
     # -- mirar -------------------------------------------------------------------
 
     def inspect(_args: dict[str, Any]) -> Any:
@@ -174,12 +243,11 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
                 + "; ".join(f"{n} {r / 2**20:.0f} MB" for n, r in top),
             )
         if what.startswith("port") or what.startswith("clip"):
-            import pyperclip
-
-            text = pyperclip.paste() or ""
-            if not text:
-                return ok("pc_system", "El portapapeles está vacío.")
-            return ok("pc_system", f"Portapapeles: «{short(text, 1500)}»")
+            return refuse(
+                "pc_system",
+                "pc_system no lee el portapapeles. Si el usuario lo pide, usa read_clipboard "
+                "(requiere su aprobación).",
+            )
         parts = [f"CPU al {psutil.cpu_percent(interval=0.3):.0f} %"]
         mem = psutil.virtual_memory()
         parts.append(f"memoria {mem.used / 2**30:.1f} de {mem.total / 2**30:.0f} GB")
@@ -238,8 +306,11 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
 
     def open_(args: dict[str, Any]) -> Any:
         target = str(args.get("target") or "")
+        verdict = open_assessment(target, apps)
+        if verdict.blocked:
+            return refuse("pc_open", f"Bloqueado por política: {verdict.reason}.")
         before = {w.hwnd for w in desk.windows()} if WINDOWS else set()
-        what = desk.open(target)
+        what = desk.open(target, check=app_name_allowed)
         win = desk.wait_for_window(before) if WINDOWS else None
         tail = f" Ventana: «{win.label}»." if win else ""
         return ok("pc_open", f"Abierto {what}.{tail}")
@@ -290,6 +361,9 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
             point, label = (int(x), int(y)), f"({int(x)}, {int(y)})"
         else:
             return refuse("pc_click", "Indica element (número de pc_inspect), target o x e y.")
+        blocked = _shell_target(desk)
+        if blocked:
+            return refuse("pc_click", blocked)
         desk.click(*point, button=button, double=double)
         time.sleep(0.4)
         win = desk.target()
@@ -301,6 +375,13 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
         text = str(args.get("text") or "")
         if not text:
             return refuse("pc_type", "No hay texto que escribir.")
+        if looks_like_command(text):
+            return refuse(
+                "pc_type", "Bloqueado por política: el texto parece una orden de consola."
+            )
+        blocked = _shell_target(desk)
+        if blocked:
+            return refuse("pc_type", blocked)
         index = clamp(args.get("element"), 1, 10_000)
         if index is not None:
             element = desk.element(int(index))
@@ -322,9 +403,15 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
         if not spec:
             return refuse("pc_keys", "Indica las teclas, por ejemplo ctrl+s.")
         times = int(clamp(args.get("times"), 1, 50) or 1)
+        verdict = keys_assessment(spec)
+        if verdict.blocked:
+            return refuse("pc_keys", f"Bloqueado por política: {verdict.reason}.")
         combo = parse_keys(spec)
         if combo and combo[0] != "win":
             desk.ensure_target()
+        blocked = _shell_target(desk)
+        if blocked:
+            return refuse("pc_keys", blocked)
         desk.hotkey(combo, times)
         repeat = f" {times} veces." if times > 1 else "."
         return ok("pc_keys", f"Pulsado {'+'.join(combo)}{repeat}")
@@ -371,6 +458,23 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
         presses = 5 if key.startswith("volume") else 1
         desk.hotkey([key], presses)
         return ok("pc_media", "Hecho.")
+
+    def youtube(args: dict[str, Any]) -> Any:
+        from crisvis.body.youtube import search_url, search_video, watch_url
+
+        query = str(args.get("query") or "").strip()
+        if not query:
+            return refuse("pc_youtube", "Falta qué poner (canción, artista o vídeo).")
+        found = search_video(query)
+        if found is None:
+            where = desk.open_web(search_url(query))
+            return ok(
+                "pc_youtube",
+                f"No pude elegir un vídeo; abiertos los resultados de «{query}»: {where}.",
+            )
+        video_id, title = found
+        where = desk.open_web(watch_url(video_id))
+        return ok("pc_youtube", f"Reproduciendo «{title or query}» en YouTube: {where}.")
 
     def file_manage(args: dict[str, Any]) -> Any:
         action = str(args.get("action") or "").lower()
@@ -510,9 +614,8 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
         ),
         tool(
             "pc_system",
-            "Estado del PC. info: resumen (CPU, memoria, disco, batería, volumen), procesos o "
-            "portapapeles.",
-            {"info": {"type": "string", "enum": ["resumen", "procesos", "portapapeles"]}},
+            "Estado del PC. info: resumen (CPU, memoria, disco, batería, volumen) o procesos.",
+            {"info": {"type": "string", "enum": ["resumen", "procesos"]}},
             system,
         ),
         tool(
@@ -575,7 +678,7 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
         tool(
             "pc_keys",
             "Pulsa una tecla o combinación en la ventana activa: 'enter', 'ctrl+s', 'alt+f4', "
-            "'win+d', 'ctrl+shift+esc'. times: repeticiones.",
+            "'win+d'. Las que abren lanzadores o consolas están bloqueadas. times: repeticiones.",
             {"keys": {"type": "string"}, "times": {"type": "integer"}},
             keys,
             required=["keys"],
@@ -613,6 +716,15 @@ def pc_tools(see: SeeFn | None, desk: Desktop = DESKTOP) -> list[FaceTool]:
                 "level": {"type": "integer"},
             },
             media,
+        ),
+        tool(
+            "pc_youtube",
+            "Pone una canción, artista o vídeo en YouTube y empieza a sonar. Usa la pestaña de "
+            "YouTube que ya esté abierta; si no hay, abre una. query: lo que hay que poner.",
+            {"query": {"type": "string"}},
+            youtube,
+            required=["query"],
+            timeout=45,
         ),
         tool(
             "pc_file_manage",

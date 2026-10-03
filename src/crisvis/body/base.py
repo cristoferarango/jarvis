@@ -32,6 +32,8 @@ class FaceTool(BaseTool):
         *,
         category: str = "interfaz",
         timeout: float = 15.0,
+        requires_confirmation: bool = False,
+        required_capabilities: list[str] | None = None,
     ) -> None:
         self.tool_id = name
         self._spec = ToolSpec(
@@ -40,6 +42,8 @@ class FaceTool(BaseTool):
             parameters=parameters,
             category=category,
             timeout_seconds=timeout,
+            requires_confirmation=requires_confirmation,
+            required_capabilities=list(required_capabilities or []),
         )
         self._handler = handler
 

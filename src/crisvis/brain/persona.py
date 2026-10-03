@@ -122,11 +122,32 @@ PC = """El PC del usuario — lo manejas tú, como lo haría él:
 - NUNCA escribas encima del trabajo del usuario. Las apps reabren sus documentos: para un
   texto nuevo, abre antes uno nuevo (ctrl+n, o ctrl+t en pestañas) y comprueba con
   pc_inspect que está vacío. Nunca guardes ni descartes cambios ajenos sin que te lo pida.
-- Música y volumen con pc_media. Webs con pc_open y la dirección.
+- Música y volumen con pc_media. Webs con pc_open y la dirección completa, que se abre en el
+  navegador del usuario: YouTube https://www.youtube.com, Gmail https://mail.google.com,
+  Notion https://www.notion.so. Abre solo lo que te pidan, cuando te lo pidan.
+- "Pon…", "reproduce…", "quiero escuchar…" una canción, artista o vídeo: pc_youtube con lo
+  que pidan; busca, elige y empieza a sonar en la pestaña de YouTube que ya haya. Pausa,
+  siguiente y volumen con pc_media. Para solo ver resultados sin reproducir, pc_open con
+  https://www.youtube.com/results?search_query=palabras+de+la+busqueda (espacios como +).
 - Encadena los pasos sin narrarlos. Al terminar, una frase con el resultado.
 - Si algo falla dos veces, para y dilo. Si el usuario dice "para" o "basta", no sigas."""
 
+LANGUAGE = """IDIOMA, SIN EXCEPCIONES. Respondes siempre y solo en {idioma_humano}, de la
+primera a la última palabra. Aunque el usuario mezcle idiomas y aunque los resultados de las
+herramientas, las páginas o los correos estén en inglés u otro idioma: tradúcelos y resúmelos
+en {idioma_humano}. Ni una frase ni una palabra suelta en inglés, chino ni ningún otro idioma,
+salvo nombres propios y marcas (YouTube, Notion, Gmail). Nunca escribas caracteres chinos."""
+
 _LANGS = {"es": "español", "en": "inglés", "ca": "catalán", "pt": "portugués", "fr": "francés"}
+
+
+def language_name(idioma: str) -> str:
+    return _LANGS.get(idioma.split("-")[0].lower(), idioma)
+
+
+def language_reminder(idioma: str) -> str:
+    """Se añade tras cada resultado de herramienta: ahí es donde el modelo se pasa al inglés."""
+    return f"(Responde al usuario solo en {language_name(idioma)}.)"
 
 
 def build_system_prompt(
@@ -138,14 +159,15 @@ def build_system_prompt(
     extra: str = "",
 ) -> str:
     names = set(tools)
-    lang = _LANGS.get(idioma.split("-")[0].lower(), idioma)
+    lang = language_name(idioma)
     parts = [
         CORE.format(
             nombre=nombre,
             idioma_humano=lang,
             tratamiento=tratamiento,
             tratamiento_cap=tratamiento[:1].upper() + tratamiento[1:],
-        )
+        ),
+        LANGUAGE.format(idioma_humano=lang),
     ]
     if names:
         parts.append(TOOLS)
@@ -161,4 +183,6 @@ def build_system_prompt(
         parts.append(PC)
     if extra.strip():
         parts.append(extra.strip())
+    # Lo último que lee un modelo pequeño es lo que más pesa.
+    parts.append(f"Recuerda: todo lo que digas, solo en {lang}.")
     return "\n\n".join(parts)

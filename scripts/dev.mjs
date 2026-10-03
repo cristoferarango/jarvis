@@ -8,8 +8,12 @@ import { spawn } from 'node:child_process'
 const procs = []
 let stopping = false
 
-function run(name, colour, command) {
-  const child = spawn(command, { shell: true, stdio: ['inherit', 'pipe', 'pipe'], env: process.env })
+function run(name, colour, command, extraEnv = {}) {
+  const child = spawn(command, {
+    shell: true,
+    stdio: ['inherit', 'pipe', 'pipe'],
+    env: { ...process.env, ...extraEnv },
+  })
   const tag = `\x1b[${colour}m[${name}]\x1b[0m `
   const relay = (stream, out) => {
     let buf = ''
@@ -45,5 +49,7 @@ function stop(code = 0) {
 process.on('SIGINT', () => stop(0))
 process.on('SIGTERM', () => stop(0))
 
-run('núcleo', '36', 'uv run python -m crisvis --no-browser')
+// CRISVIS_DEV=1: en desarrollo la página la sirve Vite y no hay cookie de
+// arranque; el núcleo acepta entonces un Origin de los puertos de Vite.
+run('núcleo', '36', 'uv run --no-sync python -m crisvis --no-browser', { CRISVIS_DEV: '1' })
 run('cara', '35', 'npm run dev -w @crisvis/face')

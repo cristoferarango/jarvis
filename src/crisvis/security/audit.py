@@ -46,8 +46,42 @@ class AuditLog:
             "resultado": outcome,
             "args": _redact(args or {}),
         }
+        self._write(entry)
+
+    def event(self, kind: str, **fields: Any) -> None:
+        """Ciclo de vida de una ejecución o de un cambio de seguridad.
+
+        ``kind``: propuesta, aprobada, denegada, bloqueada, iniciada, completada,
+        fallida, timed_out, cancelacion_solicitada, cancelled, cancel_failed,
+        modo_*, libre_*, trama_invalida… ``exec`` correlaciona los de una misma
+        ejecución. Nunca lleva resultados de herramientas ni texto del usuario.
+        """
+        entry: dict[str, Any] = {"ts": round(time.time(), 3), "evento": kind}
+        for key, value in fields.items():
+            if key == "args" and isinstance(value, dict):
+                entry[key] = _redact(value)
+            elif isinstance(value, (str, int, float, bool)) or value is None:
+                entry[key] = value
+            else:
+                entry[key] = json.loads(json.dumps(value, ensure_ascii=False, default=str))
+        self._write(entry)
+
+    def _write(self, entry: dict[str, Any]) -> None:
         line = json.dumps(entry, ensure_ascii=False)
         with self._lock:
             self._path.parent.mkdir(parents=True, exist_ok=True)
             with self._path.open("a", encoding="utf-8") as fh:
                 fh.write(line + "\n")
+
+    def tail(self, limit: int = 100) -> list[dict[str, Any]]:
+        try:
+            lines = self._path.read_text(encoding="utf-8").splitlines()[-limit:]
+        except OSError:
+            return []
+        out = []
+        for line in lines:
+            try:
+                out.append(json.loads(line))
+            except ValueError:
+                continue
+        return out

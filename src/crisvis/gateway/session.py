@@ -21,17 +21,41 @@ from collections.abc import Awaitable, Callable, Coroutine
 from typing import Any, TypeVar
 
 from crisvis.body import build_body_tools
+from crisvis.body.base import new_id
 from crisvis.brain.events import Finished, TextDelta, ToolFinished, ToolStarted
+from crisvis.execution import ExecutionTracker
 from crisvis.security import AuditLog, Decision, PermissionPolicy, Tier
+from crisvis.security.grants import GrantBook
+from crisvis.security.guard import Risk, SequenceGuard, assess
 
 log = logging.getLogger(__name__)
 
 T = TypeVar("T")
 Send = Callable[[dict[str, Any]], Awaitable[None]]
+Close = Callable[[int, str], Awaitable[None]]
 
 SESSION_TTL_SECONDS = 15 * 60
 SETTLE_SECONDS = 0.4
+# Cuánto se espera a que una herramienta cancelada termine de verdad.
+CANCEL_WAIT_SECONDS = 6.0
 INTERRUPTED_MARK = " [interrumpido]"
+# Teclado y ratón: nunca se ejecutan sin aprobación individual, ni en LIBRE.
+GUI_INPUT = frozenset({"pc_click", "pc_type", "pc_keys"})
+# Herramientas cuya aprobación queda ligada a la ventana que hay delante.
+WINDOW_BOUND = GUI_INPUT | {"pc_scroll", "pc_window"}
+
+
+def foreground_label() -> str:
+    """Título y proceso de la ventana sobre la que actuaría el control del PC."""
+    try:
+        from crisvis.body.desktop import DESKTOP, WINDOWS
+
+        if not WINDOWS:
+            return ""
+        win = DESKTOP.target()
+        return f"{win.title} [{win.process}]" if win else ""
+    except Exception:  # noqa: BLE001
+        return ""
 
 
 def summarise(tool: str, args: dict[str, Any]) -> str:
@@ -57,6 +81,7 @@ def summarise(tool: str, args: dict[str, Any]) -> str:
         return f"Ejecutar código: {arg('code', 'source')}"
     pc = {
         "pc_open": lambda: f"abrir {arg('target')}",
+        "pc_youtube": lambda: f"poner en YouTube «{arg('query')}»",
         "pc_window": lambda: f"{arg('action')} la ventana {arg('window')}",
         "pc_click": lambda: f"pulsar {arg('target') or arg('element') or arg('x')}",
         "pc_type": lambda: f"escribir «{arg('text')}»",
@@ -65,7 +90,9 @@ def summarise(tool: str, args: dict[str, Any]) -> str:
         "pc_file_manage": lambda: f"{arg('action')} {arg('path')} {arg('dest')}".strip(),
     }
     if tool in pc:
-        return f"Controlar el PC: {pc[tool]()} (y el resto de pasos de esta orden)"
+        return f"Controlar el PC: {pc[tool]()}"
+    if tool == "read_clipboard":
+        return "Leer el contenido del portapapeles"
     if tool == "pc_kill":
         return f"Forzar el cierre de {arg('process')}"
     if tool == "pc_power":
@@ -83,21 +110,33 @@ def summarise(tool: str, args: dict[str, Any]) -> str:
 
 
 class Session:
-    def __init__(self, registry: SessionRegistry, loop: asyncio.AbstractEventLoop) -> None:
+    def __init__(
+        self, registry: SessionRegistry, loop: asyncio.AbstractEventLoop, owner: str = ""
+    ) -> None:
         self.id = secrets.token_urlsafe(18)
+        # Cliente autenticado dueño de la sesión: solo él puede retomarla.
+        self.owner = owner
         self.registry = registry
         self.loop = loop
         self.history: list[tuple[str, str]] = []
         self.last_seen = time.monotonic()
         self._send: Send | None = None
+        self._close: Close | None = None
         self._outbox: asyncio.Queue[dict[str, Any] | None] | None = None
         self._writer: asyncio.Task[None] | None = None
         self._turn: asyncio.Task[None] | None = None
         self._answering: str | None = None
         self._pending: dict[str, asyncio.Future[dict[str, Any]]] = {}
         self._seq = 0
-        self._pc_granted = False
+        self._jobs: set[asyncio.Task[None]] = set()
+        self.tracker = ExecutionTracker(registry.audit, self.id)
+        self.grants = GrantBook()
+        self.sequence = SequenceGuard()
+        self.window_label: Callable[[], str] = foreground_label
         settings = registry.settings
+        security = getattr(settings, "seguridad", None)
+        self._apps = tuple(getattr(security, "apps_permitidas", ()) or ())
+        shell = "shell_exec" in getattr(settings.cerebro, "herramientas", ())
         self.body = build_body_tools(
             self,
             interface=settings.cerebro.herramientas_interfaz,
@@ -106,6 +145,9 @@ class Session:
             if getattr(registry.brain, "vision_model", settings.cerebro.modelo_vision)
             else None,
             pc=settings.cerebro.herramientas_pc,
+            clipboard=getattr(security, "portapapeles", "confirmar") == "confirmar",
+            apps=self._apps,
+            shell_token=(lambda: self.tracker.token) if shell else None,
         )
 
     # -- transporte ----------------------------------------------------------
@@ -114,9 +156,10 @@ class Session:
     def connected(self) -> bool:
         return self._send is not None
 
-    async def attach(self, send: Send) -> None:
+    async def attach(self, send: Send, close: Close | None = None) -> None:
         await self.detach()
         self._send = send
+        self._close = close
         self._outbox = asyncio.Queue()
         self._writer = asyncio.create_task(self._pump(self._outbox, send))
         self.last_seen = time.monotonic()
@@ -130,7 +173,10 @@ class Session:
         if self._send is None or (send is not None and self._send is not send):
             return
         self._send = None
+        self._close = None
         await self.stop_turn()
+        for job in list(self._jobs):
+            job.cancel()
         if self._outbox is not None:
             self._outbox.put_nowait(None)
         if self._writer is not None:
@@ -165,6 +211,12 @@ class Session:
     def push(self, frame: dict[str, Any]) -> None:
         self.loop.call_soon_threadsafe(self.send, frame)
 
+    def spawn(self, coro: Coroutine[Any, Any, None]) -> None:
+        """Trabajo aparte del turno (p. ej. una aprobación) que no debe bloquear el socket."""
+        job = asyncio.create_task(coro)
+        self._jobs.add(job)
+        job.add_done_callback(self._jobs.discard)
+
     def run(self, coro: Coroutine[Any, Any, T], timeout: float) -> T:
         return asyncio.run_coroutine_threadsafe(coro, self.loop).result(timeout)
 
@@ -194,70 +246,159 @@ class Session:
     # -- permisos ------------------------------------------------------------
 
     async def gate(self, name: str, args: dict[str, Any], spec: Any) -> str | None:
-        policy: PermissionPolicy = self.registry.policy
-        audit: AuditLog = self.registry.audit
+        """Política por herramienta + riesgo de la acción concreta + aprobación individual.
+
+        * CRITICAL (``guard``): bloqueada por política; ni se pregunta.
+        * HIGH: aprobación individual siempre, en cualquier modo y aunque la
+          configuración la permita.
+        * MEDIUM: aprobación individual salvo en LIBRE; teclado y ratón la
+          piden también en LIBRE.
+        * LOW: sin preguntar (desplazar, colocar ventanas, consultas).
+        Cada aprobación vale para una acción: herramienta, parámetros, ventana,
+        timeout, sesión y turno exactos, con nonce de un solo uso.
+        """
+        registry = self.registry
+        modes = getattr(registry, "modes", None)
+        if modes is not None:
+            modes.tick()
+        policy: PermissionPolicy = registry.policy
+        audit: AuditLog = registry.audit
         verdict = policy.evaluate(name)
         decision = verdict.decision
-        # Si OpenJarvis marca la herramienta como sensible, se pregunta siempre.
+        assessment = assess(name, args, verdict.tier, apps=self._apps)
+        chained = self.sequence.check(name, args)
+        if chained is not None:
+            assessment = chained
+        exec_id = new_id("x")
+        turn = self.tracker.turn
+
         if (
             decision is Decision.ALLOW
             and getattr(spec, "requires_confirmation", False)
             and verdict.tier is not Tier.INTERFAZ
         ):
             decision = Decision.CONFIRM
-        # Una tarea en el PC son muchos clics y teclas seguidos: el "sí" a la
-        # primera acción de escritura vale para las demás de la misma orden.
-        # Lo peligroso (apagar, matar procesos) se sigue preguntando una a una.
-        pc_write = name.startswith("pc_") and verdict.tier is Tier.ESCRITURA
-        if decision is Decision.CONFIRM and pc_write and self._pc_granted:
-            decision = Decision.ALLOW
+        if decision is not Decision.DENY and not assessment.blocked:
+            from_matrix = verdict.reason.startswith("modo ")
+            if assessment.risk is Risk.HIGH:
+                decision = Decision.CONFIRM
+            elif assessment.risk is Risk.MEDIUM and name in GUI_INPUT:
+                decision = Decision.CONFIRM
+            elif (
+                assessment.risk is Risk.LOW
+                and decision is Decision.CONFIRM
+                and from_matrix
+                and name.startswith("pc_")
+                and not getattr(spec, "requires_confirmation", False)
+            ):
+                # Lista blanca de acciones benignas: desplazar, colocar ventanas.
+                decision = Decision.ALLOW
 
-        def record(outcome: str) -> None:
-            if verdict.tier is not Tier.INTERFAZ:
-                audit.record(
-                    session=self.id[:8],
-                    tool=name,
-                    tier=verdict.tier.value,
-                    decision=decision.value,
-                    outcome=outcome,
-                    args=args,
-                )
+        def record(outcome: str, **extra: Any) -> None:
+            if verdict.tier is Tier.INTERFAZ:
+                return
+            audit.record(
+                session=self.id[:8],
+                tool=name,
+                tier=verdict.tier.value,
+                decision=decision.value,
+                outcome=outcome,
+                args=args,
+            )
+            audit.event(
+                outcome,
+                exec=exec_id,
+                sesion=self.id[:8],
+                turno=turn,
+                herramienta=name,
+                riesgo=assessment.risk.value,
+                modo=policy.mode,
+                **extra,
+            )
 
+        if assessment.blocked:
+            record("bloqueada", motivo=assessment.reason)
+            return (
+                f"Bloqueado por la política de seguridad: {assessment.reason}. No lo intentes por "
+                "otra vía (teclado, ratón, otra ventana u otra herramienta). Díselo al usuario en "
+                "una frase."
+            )
         if decision is Decision.DENY:
             record("denegada")
             return (
                 f"Bloqueado: la herramienta '{name}' no está permitida en el modo de permisos "
-                f"actual ({policy.mode}). Díselo al usuario en una frase; puede cambiar el modo "
-                "en la interfaz."
+                f"actual ({policy.mode}). Díselo al usuario en una frase."
             )
+
+        def prepare() -> None:
+            self.tracker.prepared = {
+                "tool": name,
+                "exec": exec_id,
+                "risk": assessment.risk.value,
+                "cancellable": assessment.cancellable,
+            }
+            self.sequence.commit(name, args, assessment.risk)
+
         if decision is Decision.CONFIRM:
-            seconds = self.registry.settings.permisos.segundos_confirmacion
+            seconds = float(registry.settings.permisos.segundos_confirmacion)
+            timeout = float(getattr(spec, "timeout_seconds", 0) or 0)
+            target = await asyncio.to_thread(self.window_label) if name in WINDOW_BOUND else ""
+            grant = self.grants.issue(
+                session=self.id, turn=turn, tool=name, args=args, target=target,
+                timeout=timeout, ttl_s=seconds + 5,
+            )
+            record("propuesta")
             try:
                 reply = await self.ask_face(
                     "confirm",
                     {
                         "tool": name,
                         "tier": verdict.tier.value,
+                        "risk": assessment.risk.value,
                         "summary": summarise(name, args),
+                        "warning": assessment.warning,
+                        "cancellable": assessment.cancellable,
+                        "target": target,
+                        "timeout": timeout,
                         "seconds": seconds,
                         "ask": self._answering,
+                        "grant": grant.id,
+                        "nonce": grant.nonce,
                     },
                     seconds,
                 )
-                approved = reply.get("approved") is True
-            except RuntimeError:
-                approved = False
-            if not approved:
-                record("rechazada")
+            except (RuntimeError, asyncio.CancelledError):
+                reply = {}
+            if reply.get("approved") is not True:
+                record("denegada_por_usuario")
                 return (
                     f"El usuario no autorizó '{name}'. No lo intentes de nuevo; confirma en una "
                     "frase que no se ha hecho."
                 )
+            now_target = (
+                await asyncio.to_thread(self.window_label) if name in WINDOW_BOUND else ""
+            )
+            valid, why = self.grants.redeem(
+                str(reply.get("grant") or ""),
+                str(reply.get("nonce") or ""),
+                session=self.id,
+                turn=self.tracker.turn,
+                tool=name,
+                args=args,
+                target=now_target,
+                timeout=timeout,
+            )
+            if not valid:
+                record("aprobacion_invalida", motivo=why)
+                return (
+                    f"La aprobación de '{name}' no es válida ({why}). No se ha hecho nada; "
+                    "díselo al usuario."
+                )
             record("aprobada")
-            if pc_write:
-                self._pc_granted = True
+            prepare()
             return None
         record("permitida")
+        prepare()
         return None
 
     def announcement(self, name: str, spec_confirms: bool) -> str:
@@ -277,24 +418,235 @@ class Session:
 
     # -- turnos --------------------------------------------------------------
 
-    async def stop_turn(self) -> None:
+    async def stop_turn(self, reason: str = "usuario") -> None:
+        """Corta el turno y cancela de verdad lo que esté ejecutándose.
+
+        La cara recibe ``cancel``: ``requested`` al pedirlo, y luego
+        ``cancelled`` o ``failed`` (no se pudo, o la acción ya había terminado).
+        """
         turn = self._turn
         self._turn = None
+        running = self.tracker.running()
+        self.tracker.token.cancel()
         for fut in list(self._pending.values()):
             if not fut.done():
                 fut.cancel()
-        if turn is None or turn.done():
-            return
-        turn.cancel()
-        try:
-            await asyncio.wait_for(asyncio.shield(turn), timeout=SETTLE_SECONDS)
-        except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
-            pass
+        for ex in running:
+            ex.cancel_requested = True
+            self.registry.audit.event(
+                "cancelacion_solicitada", exec=ex.id, sesion=self.id[:8], turno=ex.turn,
+                herramienta=ex.tool, cancelable=ex.cancellable, motivo=reason,
+            )
+            self.send(
+                {
+                    "type": "cancel",
+                    "phase": "requested",
+                    "exec": ex.id,
+                    "tool": ex.tool,
+                    "cancellable": ex.cancellable,
+                    "message": "Cancelando…",
+                }
+            )
+        if turn is not None and not turn.done():
+            turn.cancel()
+            try:
+                await asyncio.wait_for(asyncio.shield(turn), timeout=SETTLE_SECONDS)
+            except (asyncio.TimeoutError, asyncio.CancelledError, Exception):  # noqa: BLE001
+                pass
+        for ex in running:
+            finished = await asyncio.to_thread(ex.done.wait, CANCEL_WAIT_SECONDS)
+            if finished and ex.status in ("cancelled", "timed_out"):
+                phase, message = "cancelled", "Cancelado."
+            elif finished:
+                phase = "failed"
+                message = "No se pudo cancelar; la acción ya había terminado."
+            else:
+                phase = "failed"
+                message = "No se pudo cancelar; el proceso sigue o requiere intervención."
+                self.registry.audit.event(
+                    "cancel_failed", exec=ex.id, sesion=self.id[:8], turno=ex.turn,
+                    herramienta=ex.tool, motivo="no terminó a tiempo",
+                )
+            self.send(
+                {
+                    "type": "cancel",
+                    "phase": phase,
+                    "exec": ex.id,
+                    "tool": ex.tool,
+                    "cancellable": ex.cancellable,
+                    "message": message,
+                }
+            )
+
+    async def revoke(self, code: int, reason: str) -> None:
+        """Cambió el modo de permisos o se cerró la sesión: nada aprobado antes sigue vivo."""
+        await self.stop_turn(reason)
+        self.grants.revoke_all()
+        close = self._close
+        if close is not None:
+            try:
+                await close(code, reason)
+            except Exception:  # noqa: BLE001
+                pass
 
     async def ask(self, text: str, ask_id: str | None) -> None:
         await self.stop_turn()
         self._answering = ask_id
-        self._turn = asyncio.create_task(self._run_turn(text, ask_id))
+        adapter = self.registry.adapter
+        detail = adapter.trigger(text) if adapter is not None else None
+        if detail is not None:
+            self._turn = asyncio.create_task(self._run_briefing(text, ask_id, detail))
+        else:
+            self._turn = asyncio.create_task(self._run_turn(text, ask_id))
+
+
+    # -- informe del día (OpenClawAdapter) -------------------------------------
+
+    async def _run_briefing(self, text: str, ask_id: str | None, detail: str) -> None:
+        """El informe no pasa por el modelo: lo hace el flujo declarativo del adaptador."""
+        from crisvis.openclaw import AdapterError
+        from crisvis.openclaw.tabs import open_tabs
+
+        adapter = self.registry.adapter
+
+        def tagged(frame: dict[str, Any]) -> None:
+            self.send({**frame, "ask": ask_id})
+
+        request = adapter.build_request(text, detail=detail)
+        self.send(
+            {
+                "type": "briefing",
+                "phase": "start",
+                "request": request.model_dump(mode="json"),
+                "tabs": adapter.spec.pestanas,
+                "connectors": [c.model_dump(mode="json") for c in adapter.connector_statuses()],
+            }
+        )
+        tabs = (
+            asyncio.create_task(
+                open_tabs(
+                    adapter.cfg.abrir_al_informe,
+                    interval=adapter.cfg.abrir_intervalo,
+                    audit=adapter.audit,
+                    session=self.id,
+                )
+            )
+            if adapter.cfg.abrir_al_informe
+            else None
+        )
+
+        async def on_source(result: Any) -> None:
+            self.send({"type": "briefing", "phase": "source", "result": adapter.frame(result)})
+
+        try:
+            result = await adapter.daily_briefing(request, session=self.id, on_source=on_source)
+        except asyncio.CancelledError:
+            if tabs is not None:
+                tabs.cancel()
+            self.send({"type": "briefing", "phase": "cancelled"})
+            self._remember(text, INTERRUPTED_MARK.strip())
+            raise
+        except AdapterError as exc:
+            self.send({"type": "briefing", "phase": "error", "message": str(exc)})
+            tagged({"type": "text", "delta": str(exc)})
+            tagged({"type": "done", "text": str(exc)})
+            return
+        except Exception:  # noqa: BLE001
+            log.exception("Informe del día fallido")
+            message = "No he podido preparar el informe. El detalle está en el registro."
+            self.send({"type": "briefing", "phase": "error", "message": message})
+            tagged({"type": "error", "message": message})
+            return
+        self.send({"type": "briefing", "phase": "done", "result": adapter.frame(result)})
+        tagged({"type": "text", "delta": result.voice_summary})
+        tagged({"type": "done", "text": result.voice_summary})
+        self._remember(text, result.voice_summary)
+
+    async def briefing_request(self, msg: dict[str, Any]) -> None:
+        """Peticiones de la pestaña: actualizar una fuente o pedir el estado. Solo lectura."""
+        from crisvis.openclaw import AdapterError
+
+        adapter = self.registry.adapter
+        if adapter is None:
+            self.send({"type": "briefing", "phase": "error", "message": "Adaptador desactivado."})
+            return
+        action = msg.get("action")
+        if action == "status":
+            overview = await adapter.overview()
+            self.send({"type": "briefing", "phase": "status", "overview": overview})
+        elif action == "refresh" and isinstance(msg.get("source"), str):
+            source = msg["source"]
+            try:
+                result = await adapter.refresh_source(source, session=self.id)
+            except AdapterError as exc:
+                self.send(
+                    {"type": "briefing", "phase": "error", "source": source, "message": str(exc)}
+                )
+                return
+            self.send({"type": "briefing", "phase": "source", "result": adapter.frame(result)})
+        elif action == "audit":
+            self.send({"type": "briefing", "phase": "audit", "events": adapter.recent_audit(50)})
+
+    async def propose(self, proposal_id: str) -> None:
+        """Una acción propuesta en el informe: política → aprobación exacta → ejecutar o simular."""
+        from crisvis.openclaw import AdapterError
+        from crisvis.openclaw.policy import Verdict
+
+        adapter = self.registry.adapter
+        action = adapter.find_proposal(proposal_id) if adapter is not None else None
+        if action is None:
+            self.send(
+                {
+                    "type": "outcome",
+                    "proposal": proposal_id,
+                    "status": "error",
+                    "message": "Esa propuesta ya no existe; actualiza el informe.",
+                }
+            )
+            return
+        decision = adapter.policy.evaluate(action, adapter.mode_of(action))
+        approval_id = None
+        if decision.verdict is Verdict.APPROVE:
+            request = adapter.request_approval(action, session=self.id)
+            approval_id = request.id
+            seconds = float(adapter.cfg.segundos_aprobacion)
+            try:
+                reply = await self.ask_face(
+                    "approval", {"request": json.loads(request.model_dump_json())}, seconds
+                )
+            except (RuntimeError, asyncio.CancelledError):
+                reply = {"approved": False, "fingerprint": request.fingerprint}
+            approved = reply.get("approved") is True
+            fingerprint = reply.get("fingerprint")
+            try:
+                adapter.resolve_approval(
+                    request.id,
+                    approved,
+                    fingerprint if isinstance(fingerprint, str) else "",
+                    session=self.id,
+                )
+            except AdapterError as exc:
+                self.send(
+                    {
+                        "type": "outcome",
+                        "proposal": proposal_id,
+                        "status": "blocked",
+                        "message": str(exc),
+                    }
+                )
+                return
+            if not approved:
+                self.send(
+                    {
+                        "type": "outcome",
+                        "proposal": proposal_id,
+                        "status": "denied",
+                        "message": "Denegada. No se ha hecho nada.",
+                    }
+                )
+                return
+        outcome = adapter.execute(action, approval_id, session=self.id)
+        self.send({"type": "outcome", "proposal": proposal_id, **outcome})
 
     def _remember(self, user: str, assistant: str) -> None:
         self.history.append(("user", user))
@@ -308,7 +660,8 @@ class Session:
         brain = self.registry.brain
         spoken: list[str] = []
         held: set[str] = set()
-        self._pc_granted = False
+        self.tracker.new_turn()
+        self.sequence = SequenceGuard()
 
         def tagged(frame: dict[str, Any]) -> None:
             self.send({**frame, "ask": ask_id})
@@ -320,6 +673,7 @@ class Session:
                 visible=self.registry.policy.visible,
                 gate=self.gate,
                 query=text,
+                hooks=self.tracker,
             )
             confirms = {s.name for s in agent.tool_specs if s.requires_confirmation}
             ctx = await asyncio.to_thread(brain.context_for, text, list(self.history))
@@ -357,22 +711,58 @@ class SessionRegistry:
     """Sesiones vivas, con caducidad para las que se quedan sin socket."""
 
     def __init__(
-        self, settings: Any, brain: Any, policy: PermissionPolicy, audit: AuditLog
+        self,
+        settings: Any,
+        brain: Any,
+        policy: PermissionPolicy,
+        audit: AuditLog,
+        adapter: Any = None,
     ) -> None:
         self.settings = settings
         self.brain = brain
         self.policy = policy
         self.audit = audit
+        # OpenClawAdapter (crisvis.openclaw). None = informe del día desactivado.
+        self.adapter = adapter
+        # ModeController (crisvis.security.modes); lo fija create_app.
+        self.modes: Any = None
         self._sessions: dict[str, Session] = {}
+        self._revoking: set[asyncio.Task[None]] = set()
 
     def __len__(self) -> int:
         return len(self._sessions)
 
-    def create(self) -> Session:
+    @property
+    def connections(self) -> int:
+        return sum(1 for s in self._sessions.values() if s.connected)
+
+    def create(self, owner: str = "") -> Session:
         self.reap()
-        session = Session(self, asyncio.get_running_loop())
+        session = Session(self, asyncio.get_running_loop(), owner)
         self._sessions[session.id] = session
         return session
+
+    def on_mode_change(self, before: str, after: str) -> None:
+        """Cualquier cambio de modo corta turnos, anula aprobaciones y fuerza a reconectar."""
+        reason = f"permisos {before} -> {after}"
+        for s in list(self._sessions.values()):
+            if not s.connected:
+                continue
+            try:
+                running = asyncio.get_running_loop()
+            except RuntimeError:
+                running = None
+            if running is s.loop:
+                task = running.create_task(s.revoke(4001, reason))
+                self._revoking.add(task)
+                task.add_done_callback(self._revoking.discard)
+            else:
+                asyncio.run_coroutine_threadsafe(s.revoke(4001, reason), s.loop)
+
+    async def revoke_owner(self, owner: str, reason: str) -> None:
+        for s in list(self._sessions.values()):
+            if s.owner == owner and s.connected:
+                await s.revoke(4001, reason)
 
     def get(self, session_id: str) -> Session | None:
         return self._sessions.get(session_id)
@@ -392,7 +782,7 @@ class SessionRegistry:
             "type": kind,
             "servers": status.servers,
             "brain": status.as_frame(),
-            "permissions": {"mode": self.policy.mode},
+            "permissions": self.modes.status() if self.modes else {"mode": self.policy.mode},
             **extra,
         }
 

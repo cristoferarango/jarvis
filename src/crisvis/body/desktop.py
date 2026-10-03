@@ -24,6 +24,7 @@ import threading
 import time
 import unicodedata
 import webbrowser
+from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -179,6 +180,79 @@ def looks_like_url(text: str) -> bool:
     if re.match(r"^[a-z][a-z0-9+.-]*://", t) or t.startswith("mailto:"):
         return True
     return bool(re.match(r"^(www\.)?[a-z0-9-]+(\.[a-z0-9-]+)*\.[a-z]{2,}(/\S*)?$", t))
+
+
+# Sitios que se piden por su nombre y se abren en el navegador, no como app.
+WEB_ALIASES = {
+    "youtube": "https://www.youtube.com/",
+    "gmail": "https://mail.google.com/",
+    "correo de google": "https://mail.google.com/",
+    "google mail": "https://mail.google.com/",
+    "notion": "https://www.notion.so/",
+    "google": "https://www.google.com/",
+    "google drive": "https://drive.google.com/",
+    "drive": "https://drive.google.com/",
+    "google calendar": "https://calendar.google.com/",
+    "calendario de google": "https://calendar.google.com/",
+    "github": "https://github.com/",
+    "whatsapp web": "https://web.whatsapp.com/",
+}
+
+
+# Título que el navegador muestra cuando la pestaña activa es ese sitio.
+_SITE_TITLES = {
+    "youtube.com": "YouTube",
+    "mail.google.com": "Gmail",
+    "notion.so": "Notion",
+    "drive.google.com": "Google Drive",
+    "calendar.google.com": "Google Calendar",
+    "web.whatsapp.com": "WhatsApp",
+}
+
+
+def _host(url: str) -> str:
+    from urllib.parse import urlsplit
+
+    try:
+        return (urlsplit(url).hostname or "").lower()
+    except ValueError:
+        return ""
+
+
+def site_name(url: str) -> str:
+    host = _host(url)
+    for domain, title in _SITE_TITLES.items():
+        if host == domain or host.endswith("." + domain):
+            return title
+    return ""
+
+
+def is_site_home(url: str) -> bool:
+    from urllib.parse import urlsplit
+
+    parts = urlsplit(url)
+    return parts.path in ("", "/") and not parts.query and not parts.fragment
+
+
+def safe_address(url: str) -> str | None:
+    """URL que se puede escribir en la barra de direcciones: https, con host, sin
+    credenciales, sin espacios ni caracteres de control."""
+    from crisvis.openclaw.tabs import safe_tab_url
+
+    if len(url) > 2000 or any(c.isspace() or ord(c) < 32 for c in url):
+        return None
+    return safe_tab_url(url)
+
+
+def web_url(target: str) -> str | None:
+    """La URL que ``open`` mandará al navegador, o None si no es una web."""
+    t = (target or "").strip()
+    alias = WEB_ALIASES.get(re.sub(r"\s+", " ", t.lower()))
+    if alias:
+        return alias
+    if not looks_like_url(t):
+        return None
+    return t if "://" in t or t.lower().startswith("mailto:") else f"https://{t}"
 
 
 def short(text: str, limit: int) -> str:
@@ -540,15 +614,51 @@ class Desktop:
                 ]
         return self._apps
 
-    def open(self, target: str) -> str:
-        """Abre una URL, un archivo, una carpeta o una app. Devuelve qué abrió."""
+    def find_site_window(self, site: str) -> Window | None:
+        """Ventana de navegador cuya pestaña activa es ``site`` (YouTube, Gmail…)."""
+        if not WINDOWS or not site:
+            return None
+        for w in self.windows():
+            if w.process.lower() in _BROWSERS and not _is_own(w) and site in w.title:
+                return w
+        return None
+
+    def open_web(self, url: str) -> str:
+        """Abre ``url`` reutilizando la pestaña del mismo sitio si ya hay una delante.
+
+        Sin pestaña de ese sitio, una pestaña nueva en el navegador predeterminado.
+        En la pestaña existente solo se escribe una URL https validada en la barra de
+        direcciones (Ctrl+L), y solo si esa ventana de navegador quedó delante.
+        """
+        site = site_name(url)
+        win = self.find_site_window(site) if site else None
+        if win is None or safe_address(url) is None:
+            webbrowser.open(url)
+            return f"la página {short(url, 80)} en una pestaña nueva"
+        self.activate(win)
+        if _user32().GetForegroundWindow() != win.hwnd:
+            webbrowser.open(url)
+            return f"la página {short(url, 80)} en una pestaña nueva"
+        if not is_site_home(url):
+            self.hotkey(["ctrl", "l"])
+            self.type_text(url)
+            # Quita el autocompletado que la barra añade detrás de lo escrito.
+            self.hotkey(["delete"])
+            self.hotkey(["enter"])
+        return f"{site} en la pestaña que ya estaba abierta"
+
+    def open(self, target: str, check: Callable[[str], str | None] | None = None) -> str:
+        """Abre una URL, un archivo, una carpeta o una app. Devuelve qué abrió.
+
+        ``check(nombre)`` devuelve el motivo para no lanzar una app ya resuelta
+        (p. ej. "Terminal" encontrado en el menú Inicio), o None.
+        """
         target = target.strip()
         if not target:
             raise DesktopError("No se indicó qué abrir.")
-        if looks_like_url(target):
-            url = target if "://" in target or target.startswith("mailto:") else f"https://{target}"
-            webbrowser.open(url)
-            return f"la página {short(url, 80)}"
+        url = web_url(target)
+        if url is not None:
+            return self.open_web(url)
         path = resolve_path(target)
         if path.exists():
             _startfile(str(path))
@@ -557,8 +667,17 @@ class Desktop:
         index = best_match(target, [name for name, _ in apps], cutoff=0.7)
         if index is not None:
             name, app_id = apps[index]
+            refusal = (check(name) or check(app_id.split("!")[0])) if check else None
+            if refusal:
+                raise DesktopError(f"Bloqueado por política: {refusal}.")
             subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app_id}"])
             return f"la aplicación {name}"
+        if check is not None:
+            # Sin coincidencia en el menú Inicio, Windows resolvería el nombre
+            # por PATH/App Paths: eso es lanzar un ejecutable arbitrario.
+            raise DesktopError(
+                f"No encuentro «{target}» en el menú Inicio; no lanzo ejecutables por nombre."
+            )
         try:
             _startfile(target)
         except OSError as exc:

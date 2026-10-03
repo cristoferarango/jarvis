@@ -26,15 +26,25 @@ import {
   watchCapture,
   watchUi,
   watchConnection,
+  watchCancel,
   connectedLabels,
   coreStatus,
 } from './lib/brain'
+import type { InputSource } from '@crisvis/protocol'
+import {
+  cancelNotice,
+  isNoiseUtterance,
+  makeListenWindow,
+  makeRepeatGuard,
+} from './lib/guardrails'
 import { requestConfirm, answerConfirm, confirmPending, parseAnswer } from './lib/confirm'
 import { startAnalyser, micLevel } from './lib/audio'
 import { probeCapabilities } from './lib/capabilities'
 import { GREETING, persona, wakePattern } from './lib/persona'
 import { Confirm } from './ui/Confirm'
 import { Console } from './ui/Console'
+import { Briefing } from './ui/Briefing'
+import { Approval } from './ui/Approval'
 
 /**
  * The conversation.
@@ -53,10 +63,8 @@ import { Console } from './ui/Console'
  *  people say his name and *then* think about what they wanted. */
 const AWAIT_SPEECH_MS = 14000
 
-/** After an answer, how long the mic stays open for a follow-up before he
- *  drops back to standby. Long enough that you don't have to say the name
- *  again to continue a thought. */
-const FOLLOW_UP_MS = 11000
+const isRepeatUtterance = makeRepeatGuard(6000)
+const listenWindow = makeListenWindow()
 
 /** crypto.randomUUID needs a secure context, which a LAN address over plain
  *  http is not. Not worth failing a whole turn over an id. */
@@ -124,12 +132,25 @@ export default function App() {
     s.setCaption('')
     s.setPhase('listening')
     sfx.play('listen')
+    listenWindow.open(window, Date.now())
     idleTimer.current = setTimeout(goDormant, window)
+  }
+
+  /** Keep listening only for what is left of the current window. */
+  const keepListening = () => {
+    clearIdle()
+    const left = listenWindow.remaining(Date.now())
+    if (left <= 0) {
+      goDormant()
+      return
+    }
+    store.getState().setPhase('listening')
+    idleTimer.current = setTimeout(goDormant, left)
   }
 
   // -- one turn -------------------------------------------------------------
 
-  const respond = async (said: string): Promise<void> => {
+  const respond = async (said: string, source: InputSource): Promise<void> => {
     const mine = ++turn.current
     const stale = () => mine !== turn.current
 
@@ -140,7 +161,6 @@ export default function App() {
     s.clearPanels()
     s.clearBlades()
     s.setCaption('')
-    s.pushTurn({ id: newId(), role: 'user', text: said })
     s.setPhase('thinking')
 
     const spk = createSpeaker()
@@ -154,6 +174,11 @@ export default function App() {
 
     try {
       await ask(said, {
+        // Only what the core accepted from this authenticated session is shown
+        // as the user's words.
+        onAccepted: () => {
+          if (!stale()) store.getState().pushTurn({ id: newId(), role: 'user', text: said })
+        },
         onText: (delta) => {
           if (stale()) return
           if (!started) {
@@ -186,7 +211,7 @@ export default function App() {
             spk.say(forTool(name))
           }
         },
-      })
+      }, source)
 
       if (stale()) return
 
@@ -208,9 +233,9 @@ export default function App() {
         music.duck(false)
         store.getState().setActiveTool(null)
         music.working(false)
-        // Stay open. Having to say his name again to add one more sentence is
-        // the difference between a conversation and a vending machine.
-        listen(FOLLOW_UP_MS)
+        // Back to standby: from here only his name wakes him, so a video or
+        // music playing in the room is never taken as an order.
+        goDormant()
       }
     }
   }
@@ -246,7 +271,7 @@ export default function App() {
     // "Jarvis, what's happening in AI this week" in one breath. Waiting for a
     // greeting he didn't need is the most common way an assistant wastes time.
     if (trailing) {
-      void respond(trailing)
+      void respond(trailing, 'voz_activacion')
       return
     }
 
@@ -293,7 +318,7 @@ export default function App() {
   const onUtterance = (text: string) => {
     if (confirmPending()) {
       const verdict = parseAnswer(text, leadingName())
-      if (verdict !== null) answerConfirm(verdict)
+      if (verdict !== null) answerConfirm(verdict, { voice: true })
       return
     }
     const phase = store.getState().phase
@@ -306,12 +331,14 @@ export default function App() {
       return
     }
     const said = text.replace(leadingName(), '').trim()
-    if (!said) {
-      listen(AWAIT_SPEECH_MS)
+    if (!said || isNoiseUtterance(said)) {
+      keepListening()
       return
     }
+    // Una frase repetida no puede cortar la respuesta que ya está en marcha.
+    if (isRepeatUtterance(said, Date.now())) return
 
-    void respond(said)
+    void respond(said, 'voz')
   }
 
   const onPartial = (text: string) => {
@@ -323,7 +350,7 @@ export default function App() {
   }
 
   /** Typed instead of spoken: same turn, minus the microphone. */
-  const onTyped = (text: string) => {
+  const onTyped = (text: string, source: InputSource = 'teclado') => {
     const phase = store.getState().phase
     if (phase === 'offline' || phase === 'boot') return
     if (confirmPending()) {
@@ -333,7 +360,7 @@ export default function App() {
     }
     store.getState().setError(null)
     if (phase === 'thinking' || phase === 'tooling' || phase === 'speaking') onSpeechStart()
-    void respond(text.replace(leadingName(), '').trim() || text)
+    void respond(text.replace(leadingName(), '').trim() || text, source)
   }
 
   // -- power on -------------------------------------------------------------
@@ -496,6 +523,13 @@ export default function App() {
     // The conversation lives in the core's session and survives a dropped
     // socket. Only a restarted core loses it — and then it is better to say so
     // than to let him quietly forget while the transcript still shows it.
+    // Stop: what was really cancelled, never "done" for something that wasn't.
+    watchCancel((c) => {
+      const st = store.getState()
+      const notice = cancelNotice(c)
+      if (notice.kind === 'caption') st.setCaption(notice.text)
+      else st.setError(notice.text)
+    })
     watchConnection((state) => {
       const st = store.getState()
       if (state === 'lost') {
@@ -747,8 +781,10 @@ export default function App() {
       <Hud />
       <Boot />
       <Diagnostics />
-      <Console onAsk={onTyped} />
+      <Console onAsk={(text) => onTyped(text, 'teclado')} />
+      <Briefing onRun={() => onTyped('Informe del día', 'boton')} />
       <Confirm />
+      <Approval />
       <Ignition onStart={() => void powerOn()} />
     </>
   )

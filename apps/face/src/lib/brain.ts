@@ -1,14 +1,22 @@
 import type {
+  ActionRisk,
+  ApprovalRequest,
   BrainStatus,
+  BriefingFrame,
+  CancelFrame,
   CaptureFrame,
   ConfirmFrame,
+  InputSource,
+  OutcomeFrame,
   PermissionMode,
   ReadyFrame,
   StatusFrame,
+  UserPermissionMode,
 } from '@crisvis/protocol'
 import { PROTOCOL_VERSION } from '@crisvis/protocol'
 import type { Blade, Panel } from '../store'
 import { CORE_WS_URL } from '../config'
+import { authFetch, invalidate, wsTicket } from './auth'
 
 /**
  * Cliente del núcleo de Crisvis.
@@ -26,9 +34,11 @@ import { CORE_WS_URL } from '../config'
 export type AskHandlers = {
   onText: (delta: string) => void
   onTool: (name: string) => void
+  /** El núcleo aceptó la entrada: solo entonces se muestra como del usuario. */
+  onAccepted?: () => void
 }
 
-export type { BrainStatus, PermissionMode }
+export type { BrainStatus, InputSource, PermissionMode }
 
 /** Todo lo que puede llegar. Laxo a propósito: una trama de una versión futura
  *  del núcleo se ignora, no rompe el turno. */
@@ -52,10 +62,21 @@ type Frame = {
   session?: string
   resumed?: boolean
   brain?: BrainStatus
-  permissions?: { mode: PermissionMode }
+  permissions?: { mode: PermissionMode; libreUntil?: number | null }
   tool?: string
   tier?: ConfirmFrame['tier']
+  risk?: ActionRisk
+  warning?: string
+  target?: string
+  cancellable?: boolean
+  grant?: string
+  nonce?: string
   summary?: string
+  phase?: string
+  request?: unknown
+  proposal?: string
+  accepted?: boolean
+  exec?: string
 }
 
 const SESSION_KEY = 'crisvis.session'
@@ -72,9 +93,11 @@ export type CoreStatus = {
   servers: string[]
   brain: BrainStatus | null
   permissions: PermissionMode
+  /** Epoch (s) en que LIBRE caduca, si está activo. */
+  libreUntil: number | null
 }
 
-let status: CoreStatus = { servers: [], brain: null, permissions: 'confirmar' }
+let status: CoreStatus = { servers: [], brain: null, permissions: 'confirmar', libreUntil: null }
 let onStatus: ((s: CoreStatus) => void) | null = null
 
 /** Estado del cerebro, servidores MCP y modo de permisos. Llega al conectar y
@@ -93,6 +116,7 @@ function applyStatus(msg: ReadyFrame | StatusFrame | Frame) {
     servers,
     brain: (msg.brain as BrainStatus | undefined) ?? status.brain,
     permissions: (msg.permissions?.mode as PermissionMode | undefined) ?? status.permissions,
+    libreUntil: msg.permissions ? (msg.permissions.libreUntil ?? null) : status.libreUntil,
   }
   onStatus?.(status)
 }
@@ -133,12 +157,56 @@ export type ConfirmRequest = {
   id: string
   tool: string
   tier: ConfirmFrame['tier']
+  risk: ActionRisk
   summary: string
+  warning: string
+  target: string
+  cancellable: boolean
   seconds: number
 }
 let onConfirm: ((req: ConfirmRequest) => Promise<boolean>) | null = null
 export function watchConfirm(fn: (req: ConfirmRequest) => Promise<boolean>) {
   onConfirm = fn
+}
+
+/** Stop sobre una herramienta ya en marcha: Cancelando… → Cancelado / No se pudo. */
+export type CancelStatus = Pick<CancelFrame, 'phase' | 'tool' | 'cancellable' | 'message'>
+let onCancel: ((s: CancelStatus) => void) | null = null
+export function watchCancel(fn: (s: CancelStatus) => void) {
+  onCancel = fn
+}
+
+/**
+ * Informe del día (OpenClawAdapter). La cara nunca habla con OpenClaw: pide
+ * al núcleo y el núcleo pasa por el adaptador.
+ */
+let onBriefing: ((frame: BriefingFrame) => void) | null = null
+export function watchBriefing(fn: (frame: BriefingFrame) => void) {
+  onBriefing = fn
+}
+
+/**
+ * Aprobación exacta de una acción del informe. La respuesta lleva la huella de
+ * la acción que se mostró: si la acción cambia, la aprobación no vale.
+ */
+let onApproval: ((req: ApprovalRequest) => Promise<boolean>) | null = null
+export function watchApproval(fn: (req: ApprovalRequest) => Promise<boolean>) {
+  onApproval = fn
+}
+
+let onOutcome: ((frame: OutcomeFrame) => void) | null = null
+export function watchOutcome(fn: (frame: OutcomeFrame) => void) {
+  onOutcome = fn
+}
+
+/** Pestañas del informe: refrescar una fuente, estado de conectores o auditoría. */
+export function requestBriefing(action: 'refresh' | 'status' | 'audit', source?: string): void {
+  if (socket) sendRaw(socket, { type: 'briefing', action, ...(source ? { source } : {}) })
+}
+
+/** Pedir que el núcleo evalúe una acción propuesta. Puede volver una `approval`. */
+export function proposeAction(proposal: string): void {
+  if (socket) sendRaw(socket, { type: 'propose', proposal })
 }
 
 /**
@@ -258,7 +326,12 @@ function dispatch(ws: WebSocket) {
       case 'confirm': {
         if (!msg.id) break
         const id = msg.id
-        const answer = (approved: boolean) => sendRaw(ws, { type: 'reply', id, approved })
+        // La aprobación es de un solo uso y solo para esta acción: se devuelven
+        // tal cual el id y el nonce que mandó el núcleo.
+        const grant = msg.grant ?? ''
+        const nonce = msg.nonce ?? ''
+        const answer = (approved: boolean) =>
+          sendRaw(ws, { type: 'reply', id, approved, ...(approved ? { grant, nonce } : {}) })
         if (!onConfirm) {
           answer(false)
           break
@@ -267,16 +340,54 @@ function dispatch(ws: WebSocket) {
           id,
           tool: msg.tool ?? '',
           tier: msg.tier ?? 'escritura',
+          risk: msg.risk ?? 'medium',
           summary: msg.summary ?? msg.tool ?? '',
+          warning: msg.warning ?? '',
+          target: msg.target ?? '',
+          cancellable: msg.cancellable === true,
           seconds: Number(msg.seconds) || 30,
         })
           .then(answer)
           .catch(() => answer(false))
         break
       }
+      case 'briefing':
+        if (msg.phase) onBriefing?.(msg as unknown as BriefingFrame)
+        break
+      case 'approval': {
+        if (!msg.id || !msg.request) break
+        const id = msg.id
+        const request = msg.request as ApprovalRequest
+        const answer = (approved: boolean) =>
+          sendRaw(ws, { type: 'reply', id, approved, fingerprint: request.fingerprint })
+        if (!onApproval) {
+          answer(false)
+          break
+        }
+        onApproval(request)
+          .then(answer)
+          .catch(() => answer(false))
+        break
+      }
+      case 'outcome':
+        if (msg.proposal) onOutcome?.(msg as unknown as OutcomeFrame)
+        break
+      case 'cancel':
+        if (msg.phase) {
+          onCancel?.({
+            phase: msg.phase as CancelFrame['phase'],
+            tool: msg.tool ?? '',
+            cancellable: msg.cancellable === true,
+            message: msg.message ?? '',
+          })
+        }
+        break
     }
   })
 }
+
+/** Cierres del núcleo con significado (ver crisvis.gateway.ws). */
+const CLOSE_PERMISSIONS_CHANGED = 4001
 
 function connect(): Promise<WebSocket> {
   if (socket?.readyState === WebSocket.OPEN) return Promise.resolve(socket)
@@ -284,8 +395,21 @@ function connect(): Promise<WebSocket> {
 
   firstReady = deferred()
 
-  connecting = new Promise<WebSocket>((resolve, reject) => {
-    const ws = new WebSocket(CORE_WS_URL)
+  connecting = (async () => {
+    // Ticket de un solo uso, pedido con el token de sesión (ver lib/auth.ts).
+    const ticket = await wsTicket()
+    return open(`${CORE_WS_URL}?ticket=${encodeURIComponent(ticket)}`)
+  })()
+  connecting.catch(() => {
+    connecting = null
+    if (everConnected) scheduleReconnect()
+  })
+  return connecting
+}
+
+function open(url: string): Promise<WebSocket> {
+  return new Promise<WebSocket>((resolve, reject) => {
+    const ws = new WebSocket(url)
     let settled = false
 
     const settle = (err: Error | null) => {
@@ -306,8 +430,9 @@ function connect(): Promise<WebSocket> {
       socket = ws
       attempt = 0
       dispatch(ws)
-      const previous = sessionStorage.getItem(SESSION_KEY)
-      if (previous) sendRaw(ws, { type: 'hello', session: previous, protocol: PROTOCOL_VERSION })
+      // `hello` siempre primero: el núcleo rechaza cualquier otra trama antes.
+      const previous = sessionStorage.getItem(SESSION_KEY) ?? ''
+      sendRaw(ws, { type: 'hello', session: previous, protocol: PROTOCOL_VERSION })
       settle(null)
       if (!everConnected) onConnection?.('open')
       everConnected = true
@@ -323,18 +448,20 @@ function connect(): Promise<WebSocket> {
         ),
       )
     }
-    ws.onclose = () => {
+    ws.onclose = (e: CloseEvent) => {
       settle(new Error('El núcleo cerró la conexión.'))
+      // Un rechazo del ticket u origen: el token puede ser de otro arranque.
+      if (!socket || socket !== ws) invalidate()
       if (socket === ws) {
         socket = null
         wasLost = true
         onConnection?.('lost')
+        // Cambió el modo de permisos: reconectar ya, con un ticket nuevo.
+        if (e.code === CLOSE_PERMISSIONS_CHANGED) attempt = 0
         scheduleReconnect()
       }
     }
   })
-
-  return connecting
 }
 
 /** Abrir el socket pronto, para que el primer "Jarvis" no espere al handshake. */
@@ -346,9 +473,25 @@ export async function warm(): Promise<void> {
   ])
 }
 
-/** Cambiar el modo de permisos. El núcleo responde con un `status` nuevo. */
-export function setPermissions(mode: PermissionMode): void {
-  if (socket) sendRaw(socket, { type: 'permissions', mode })
+/**
+ * Bajar a SOLO LECTURA o volver a CONFIRMAR. Va por HTTP con el token, nunca
+ * por el WebSocket; LIBRE no se puede pedir desde aquí (solo la CLI de
+ * administración). El núcleo cierra los sockets y la cara reconecta con el
+ * estado nuevo.
+ */
+export async function setPermissions(mode: UserPermissionMode): Promise<void> {
+  const res = await authFetch('/api/permisos', {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ modo: mode }),
+  })
+  if (!res.ok) {
+    const body = (await res.json().catch(() => ({}))) as { detail?: string }
+    throw new Error(body.detail ?? `El núcleo rechazó el cambio (${res.status}).`)
+  }
+  const data = (await res.json()) as { mode: PermissionMode; libreUntil: number | null }
+  status = { ...status, permissions: data.mode, libreUntil: data.libreUntil }
+  onStatus?.(status)
 }
 
 // ---------------------------------------------------------------------------
@@ -364,6 +507,7 @@ let pending: { finish: (fallback?: string) => void } | null = null
 export async function ask(
   prompt: string,
   handlers: AskHandlers,
+  source: InputSource = 'desconocido',
 ): Promise<{ text: string; tools: string[] }> {
   // Una pregunta nueva sustituye a la que esté en vuelo.
   if (pending) cancel()
@@ -442,6 +586,10 @@ export async function ask(
 
       try {
         switch (msg.type) {
+          case 'input':
+            if (msg.accepted) handlers.onAccepted?.()
+            else fail(new Error(msg.message ?? 'El núcleo rechazó la entrada.'))
+            break
           case 'text':
             text += msg.delta ?? ''
             handlers.onText(msg.delta ?? '')
@@ -473,7 +621,7 @@ export async function ask(
     arm()
 
     try {
-      ws.send(JSON.stringify({ type: 'ask', text: prompt, id }))
+      ws.send(JSON.stringify({ type: 'ask', text: prompt, id, source }))
     } catch (err) {
       fail(err instanceof Error ? err : new Error(String(err)))
     }

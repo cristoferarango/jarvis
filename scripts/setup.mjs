@@ -61,7 +61,21 @@ if (!has('uv')) {
   )
   process.exit(1)
 }
-sh('uv sync')
+const synced = sh('uv sync', { allowFail: true, capture: true })
+if (synced.status !== 0) {
+  const why = `${synced.stdout ?? ''}${synced.stderr ?? ''}`
+  // Windows con Control inteligente de aplicaciones bloquea el Python temporal
+  // en el que uv compila el paquete. Se compila en el entorno del proyecto.
+  if (isWin && /4551|Control de aplicaciones|Application Control/i.test(why)) {
+    warn('Windows (Control inteligente de aplicaciones) bloqueó la compilación aislada; uso el entorno del proyecto.')
+    sh('uv pip install hatchling editables')
+    sh('uv sync --no-build-isolation-package crisvis')
+  } else {
+    console.error(why)
+    console.error('\n\x1b[31m✗ Falló: uv sync\x1b[0m')
+    process.exit(synced.status ?? 1)
+  }
+}
 ok('Entorno Python listo (OpenJarvis incluido)')
 
 step('Dependencias de la interfaz')
@@ -73,7 +87,7 @@ sh('npm run build')
 ok('Interfaz compilada en src/crisvis/static')
 
 step('Configuración')
-sh('uv run python -m crisvis init', { allowFail: true })
+sh('uv run --no-sync python -m crisvis init', { allowFail: true })
 
 step('Voz clonada (XTTS-v2)')
 if (skipVoice) {
@@ -133,6 +147,6 @@ if (!ollama) {
 }
 
 step('Diagnóstico')
-sh('uv run python -m crisvis doctor', { allowFail: true })
+sh('uv run --no-sync python -m crisvis doctor', { allowFail: true })
 
 console.log('\n\x1b[32mListo.\x1b[0m Arranca con:  \x1b[1mnpm start\x1b[0m   (abre http://127.0.0.1:8787)\n')

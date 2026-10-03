@@ -1,22 +1,42 @@
-import { useState, type FormEvent } from 'react'
+import { useEffect, useState, type FormEvent } from 'react'
 import type { PermissionMode } from '@crisvis/protocol'
 import { useStore } from '../store'
-import { setPermissions } from '../lib/brain'
+import { coreStatus, setPermissions } from '../lib/brain'
+import { libreLeft, userSelectable } from '../lib/guardrails'
 
 const MODES: Array<{ mode: PermissionMode; label: string; hint: string }> = [
   { mode: 'lectura', label: 'SOLO LECTURA', hint: 'Solo herramientas que no cambian nada.' },
-  { mode: 'confirmar', label: 'CONFIRMAR', hint: 'Pide permiso antes de escribir o ejecutar.' },
-  { mode: 'libre', label: 'LIBRE', hint: 'Actúa sin preguntar (salvo lo denegado en la configuración).' },
+  { mode: 'confirmar', label: 'CONFIRMAR', hint: 'Pide permiso para cada acción que cambie algo.' },
+  {
+    mode: 'libre',
+    label: 'LIBRE',
+    hint: 'Deshabilitado. Solo se activa unos minutos desde una terminal (crisvis permisos libre).',
+  },
 ]
 
+const LIBRE_HOWTO =
+  'LIBRE está deshabilitado desde la interfaz.\n\n' +
+  'Para habilitarlo unos minutos, en una terminal de este equipo:\n' +
+  '  uv run --no-sync python -m crisvis permisos libre --minutos 10\n\n' +
+  'Teclado, ratón, portapapeles, órdenes y acciones de sistema se siguen aprobando una a una. ' +
+  'Caduca solo y vuelve a CONFIRMAR al reiniciar.'
+
 /**
- * La consola: escribir en lugar de hablar, y elegir cuánto puede hacer el
- * cerebro sin preguntar. Vive en la esquina inferior izquierda.
+ * La consola: escribir en lugar de hablar, y bajar o restaurar los permisos.
+ * El modo lo decide el núcleo; aquí solo se pide LECTURA o CONFIRMAR.
  */
 export function Console({ onAsk }: { onAsk: (text: string) => void }) {
   const phase = useStore((s) => s.phase)
   const permissions = useStore((s) => s.permissions)
   const [text, setText] = useState('')
+  const [, tick] = useState(0)
+
+  const libreUntil = permissions === 'libre' ? coreStatus().libreUntil : null
+  useEffect(() => {
+    if (!libreUntil) return
+    const t = window.setInterval(() => tick((n) => n + 1), 1000)
+    return () => window.clearInterval(t)
+  }, [libreUntil])
 
   if (phase === 'offline' || phase === 'boot') return null
 
@@ -30,15 +50,13 @@ export function Console({ onAsk }: { onAsk: (text: string) => void }) {
 
   const choose = (mode: PermissionMode) => {
     if (mode === permissions) return
-    if (
-      mode === 'libre' &&
-      !window.confirm(
-        'Modo LIBRE: el asistente podrá escribir archivos y ejecutar órdenes sin pedir permiso. ¿Continuar?',
-      )
-    ) {
+    if (!userSelectable(mode)) {
+      window.alert(LIBRE_HOWTO)
       return
     }
-    setPermissions(mode)
+    setPermissions(mode).catch((err: unknown) => {
+      useStore.getState().setError(err instanceof Error ? err.message : String(err))
+    })
   }
 
   return (
@@ -55,6 +73,7 @@ export function Console({ onAsk }: { onAsk: (text: string) => void }) {
             onClick={() => choose(m.mode)}
           >
             {m.label}
+            {m.mode === 'libre' && libreUntil ? ` · ${libreLeft(libreUntil, Date.now())}` : ''}
           </button>
         ))}
       </div>
