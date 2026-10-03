@@ -28,6 +28,28 @@ conecte la cuenta. No son de OpenClaw.
 | Mensajería (WhatsApp/Telegram) | Solo borradores sugeridos | Canales oficiales de OpenClaw (<https://docs.openclaw.ai/channels/whatsapp>, `/channels/telegram`) | draft | Token de bot / emparejamiento; número separado | — | Alto (envío automático) | no configurado | `mensajeria.send`: HIGH, siempre | Nunca autoenvío; `dmPolicy: pairing` |
 | Sandbox local | Guardar el informe | custom (`<home>/sandbox`) | draft | — | — | Bajo | no configurado (LOW deshabilitado) | LOW: solo si `permitir_bajo = true` | Ruta confinada al sandbox |
 
+## Conectores descargados (sin cuentas)
+
+`scripts/conectores.ps1` (también lo ejecuta `install.ps1`) descarga los
+binarios que piden las skills **incluidas** en OpenClaw. No ejecuta `gog auth`
+ni `ntn login`: ninguna cuenta queda conectada y no se guarda ningún token.
+
+| Conector | Skill de OpenClaw | Origen verificado | Versión | Estado en este equipo |
+|---|---|---|---|---|
+| `gog` (Gmail, Calendar, Drive, Contacts, Sheets, Docs) | `gog` (incluida) | <https://github.com/openclaw/gogcli> (organización OpenClaw, MIT), ZIP de la release con `checksums.txt` (SHA-256 comprobado) | 0.43.0 | Descargado en `%LOCALAPPDATA%\Programs\gogcli`. **Bloqueado por el Control inteligente de aplicaciones** (binario sin firma). No se desactiva el SAC: alternativas WSL2 o la imagen `ghcr.io/openclaw/gogcli` en Docker |
+| `ntn` (Notion) | `notion` (incluida) | Paquete npm `ntn`, mantenedor de makenotion.com (CLI oficial de Notion) | 0.23.17 | Instalado y funcionando; sin `ntn login` |
+
+Notas de seguridad:
+
+- `gog` puede enviar correo y modificar Calendar/Sheets. Cuando se conecte,
+  pedir solo servicios y ámbitos de lectura y valorar la *safety profile*
+  `readonly` de gogcli (se compila desde el código fuente). Verificar las
+  opciones exactas en <https://gogcli.sh> el día de la conexión.
+- La vía oficial de Gmail por Pub/Sub sigue descartada: exige hooks y un
+  endpoint público (Tailscale Funnel).
+- CRISVIS no invoca al agente de OpenClaw; las skills solo serían usables por
+  ese agente, que tiene `tools.profile: minimal` y todos los grupos denegados.
+
 ## Notas
 
 - **Gmail oficial no se usa**: necesita un endpoint HTTPS público. Viola la

@@ -32,6 +32,37 @@ Navegador ──(mismo origen: /, /ws, /tts, /stt, /img, /page…)──► núc
 Modelo recomendado: `qwen3:8b` (≈5 GB, va bien con 8 GB de VRAM o más). Con menos
 memoria, `qwen3:4b`.
 
+## Instalación con un solo comando (Windows)
+
+En una consola de PowerShell (el repositorio es privado: `git clone` abre el
+inicio de sesión de GitLab la primera vez):
+
+```powershell
+winget install --id Git.Git -e --silent --accept-source-agreements --accept-package-agreements; $env:Path += ";$env:ProgramFiles\Git\cmd"; git clone https://gitlab.com/cristoferarango/crisvis.git "$HOME\CRISVIS"; powershell -ExecutionPolicy Bypass -File "$HOME\CRISVIS\install.ps1"
+```
+
+Si algún día el repositorio pasa a ser público, basta con:
+
+```powershell
+irm https://gitlab.com/cristoferarango/crisvis/-/raw/main/install.ps1 | iex
+```
+
+Instala con winget lo que falte (Git, uv, Node.js LTS, Ollama), descarga el
+código en `~\CRISVIS`, ejecuta `npm run setup`, instala OpenClaw fijado a la
+versión auditada y endurecido (solo `127.0.0.1:18789`, sin canales, hooks,
+webhooks, túneles ni arranque automático) y descarga los conectores de sus
+skills (`gog` para Google, `ntn` para Notion) **sin conectar ninguna cuenta**.
+
+Opciones: `-SinVoz`, `-SinModelo`, `-SinVision`, `-SinOpenClaw`,
+`-SinConectores`, `-Destino <carpeta>`. Con opciones:
+
+```powershell
+& ([scriptblock]::Create((irm https://gitlab.com/cristoferarango/crisvis/-/raw/main/install.ps1))) -SinVoz
+```
+
+Con la copia ya descargada:
+`powershell -ExecutionPolicy Bypass -File install.ps1 -SinVoz` (por ejemplo).
+
 ## Instalación (en cualquier PC)
 
 ```bash

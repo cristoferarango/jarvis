@@ -1,0 +1,47 @@
+// Endurecimiento de OpenClaw para CRISVIS (docs/OPENCLAW_AUDIT.md §7).
+// Se aplica con: openclaw config patch --file scripts/openclaw-endurecido.json5
+// Solo loopback, sin canales, hooks, webhooks, Tailscale, mDNS, cron ni heartbeat,
+// y sin herramientas de acción para el agente.
+{
+  gateway: {
+    bind: "loopback",
+    port: 18789,
+    tailscale: { mode: "off" },
+  },
+  discovery: { mdns: { mode: "off" } },
+  cron: { enabled: false },
+  agents: { defaults: { heartbeat: { every: "0m" } } },
+  session: { dmScope: "per-channel-peer" },
+  tools: {
+    profile: "minimal",
+    deny: [
+      "group:runtime",
+      "group:fs",
+      "group:automation",
+      "group:nodes",
+      "group:ui",
+      "group:web",
+      "group:messaging",
+      "group:plugins",
+      "sessions_spawn",
+      "sessions_send",
+    ],
+    sessions: { visibility: "agent" },
+    agentToAgent: { enabled: false },
+    elevated: { enabled: false },
+    exec: { security: "deny", ask: "always" },
+    fs: { workspaceOnly: true },
+  },
+  plugins: {
+    entries: {
+      "memory-core": { config: { dreaming: { enabled: false } } },
+      browser: { enabled: false },
+      canvas: { enabled: false },
+      "cua-computer": { enabled: false },
+      "file-transfer": { enabled: false },
+      geolocation: { enabled: false },
+      "linux-node": { enabled: false },
+      "talk-voice": { enabled: false },
+    },
+  },
+}
