@@ -128,12 +128,50 @@ def normalize(text: str) -> str:
     return re.sub(r"\s+", " ", plain).strip().lower()
 
 
+_FILLER_WORDS = {"de", "del", "el", "la", "los", "las", "app", "aplicacion", "programa"}
+_UNINSTALL = re.compile(r"\b(uninstall|desinstal)")
+
+
+def _words(text: str) -> list[str]:
+    return re.findall(r"[a-z0-9]+", text)
+
+
+def _word_score(query_words: list[str], name: str) -> float:
+    """Parecido palabra a palabra: 'premier beta' ~ 'adobe premiere pro (beta)'.
+
+    Cada palabra pedida tiene que parecerse a alguna del nombre; con una sola
+    palabra se exige más, que si no casi cualquier nombre corto encaja.
+    """
+    words = _words(name)
+    if not words or not query_words:
+        return 0.0
+    floor = 0.8 if len(query_words) == 1 else 0.6
+    total = 0.0
+    for q in query_words:
+        best = max(
+            1.0
+            if w == q
+            else 0.95
+            if len(q) >= 3 and w.startswith(q)
+            else difflib.SequenceMatcher(None, q, w).ratio()
+            for w in words
+        )
+        if best < floor:
+            return 0.0
+        total += best
+    return total / len(query_words)
+
+
 def best_match(query: str, names: list[str], cutoff: float = 0.72) -> int | None:
     """Índice del nombre que mejor encaja con lo pedido, o None."""
     q = normalize(query)
     if not q:
         return None
-    norm = [normalize(n) for n in names]
+    wants_uninstall = _UNINSTALL.search(q) is not None
+    norm = [
+        "" if not wants_uninstall and _UNINSTALL.search(normalize(n)) else normalize(n)
+        for n in names
+    ]
     for test in (
         lambda n: n == q,
         lambda n: n.startswith(q),
@@ -143,6 +181,12 @@ def best_match(query: str, names: list[str], cutoff: float = 0.72) -> int | None
         hits = [i for i, n in enumerate(norm) if n and test(n)]
         if hits:
             return min(hits, key=lambda i: len(norm[i]))
+    query_words = [w for w in _words(q) if w not in _FILLER_WORDS]
+    by_words = [(_word_score(query_words, n), -len(n), i) for i, n in enumerate(norm) if n]
+    if by_words:
+        score, _, index = max(by_words)
+        if score >= cutoff:
+            return index
     scored = [(difflib.SequenceMatcher(None, q, n).ratio(), i) for i, n in enumerate(norm) if n]
     if not scored:
         return None
@@ -700,8 +744,12 @@ class Desktop:
         if path.exists():
             _startfile(str(path))
             return f"{'la carpeta' if path.is_dir() else 'el archivo'} {path.name or path}"
+        # El modelo a veces inventa una ruta para una app ("…/AFTER EFFECTS"): se
+        # prueba con el último nombre en el menú Inicio.
+        is_path = "/" in target or "\\" in target
+        wanted = path.name if is_path else target
         apps = self.apps()
-        index = best_match(target, [name for name, _ in apps], cutoff=0.7)
+        index = best_match(wanted, [name for name, _ in apps], cutoff=0.7) if wanted else None
         if index is not None:
             name, app_id = apps[index]
             refusal = (check(name) or check(app_id.split("!")[0])) if check else None
@@ -709,6 +757,11 @@ class Desktop:
                 raise DesktopError(f"Bloqueado por política: {refusal}.")
             subprocess.Popen(["explorer.exe", f"shell:AppsFolder\\{app_id}"])
             return f"la aplicación {name}"
+        if is_path:
+            raise DesktopError(
+                f"No existe «{target}» ni hay una app que se llame «{wanted}». Busca la "
+                "ruta real con pc_find_files o pide la app por su nombre."
+            )
         if check is not None:
             # Sin coincidencia en el menú Inicio, Windows resolvería el nombre
             # por PATH/App Paths: eso es lanzar un ejecutable arbitrario.

@@ -52,6 +52,10 @@ código en `~\CRISVIS`, ejecuta `npm run setup`, instala OpenClaw fijado a la
 versión auditada y endurecido (solo `127.0.0.1:18789`, sin canales, hooks,
 webhooks, túneles ni arranque automático) y descarga los conectores de sus
 skills (`gog` para Google, `ntn` para Notion) **sin conectar ninguna cuenta**.
+Al final deja un único icono **CRISVIS** en el escritorio: arranca Ollama si
+hace falta, el núcleo sin ventana (con la voz clonada) y abre la interfaz.
+Siempre en CONFIRMAR y sin OpenClaw. Registro en `~\.crisvis\logs`. Para
+recrear el icono: `powershell -ExecutionPolicy Bypass -File scripts\crear-icono.ps1`.
 
 Opciones: `-SinVoz`, `-SinModelo`, `-SinVision`, `-SinOpenClaw`,
 `-SinConectores`, `-Destino <carpeta>`. Con opciones:

@@ -627,8 +627,10 @@ def pc_tools(
         ),
         tool(
             "pc_open",
-            "Abre una aplicación por su nombre (Spotify, Word, calculadora…), un archivo, una "
-            "carpeta o una web.",
+            "Abre una aplicación por su nombre tal como lo dijo el usuario (Premiere Pro Beta, "
+            "After Effects, Word, calculadora…), un archivo, una carpeta o una web. Para una "
+            "app pasa solo su nombre, nunca una ruta inventada; un archivo o carpeta, con la "
+            "ruta real que dio pc_find_files.",
             {"target": {"type": "string"}},
             open_,
             required=["target"],

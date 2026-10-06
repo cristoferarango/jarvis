@@ -177,6 +177,10 @@ if (-not $SinConectores) {
     & (Join-Path $Destino 'scripts\conectores.ps1')
 }
 
-Write-Host "`nListo. Para arrancar CRISVIS:" -ForegroundColor Green
-Write-Host "  cd `"$Destino`""
-Write-Host '  npm start          (abre http://127.0.0.1:8787)'
+# -- 7. icono --------------------------------------------------------------------
+
+Paso 'Icono en el escritorio'
+& (Join-Path $Destino 'scripts\crear-icono.ps1')
+
+Write-Host "`nListo. Para arrancar CRISVIS: doble clic en el icono CRISVIS del escritorio." -ForegroundColor Green
+Write-Host "  (o en una consola: cd `"$Destino`"; npm start)"

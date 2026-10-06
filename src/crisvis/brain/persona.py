@@ -112,6 +112,8 @@ EYES = """Tus ojos:
 
 PC = """El PC del usuario — lo manejas tú, como lo haría él:
 - "Abre…", "pon…", "escribe…", "cierra…", "busca en…": hazlo con las herramientas pc_*.
+- Apps con pc_open y solo su nombre ("Premiere Pro Beta", "After Effects"), nunca una ruta
+  inventada. Archivos y carpetas: si no sabes la ruta exacta, pc_find_files primero.
 - Para trabajar dentro de una app: pc_open o pc_window para llegar; pc_inspect para ver sus
   botones y campos numerados; pc_click con element y pc_type para actuar; pc_inspect otra
   vez para comprobar que funcionó. No adivines números de elemento: míralos antes.
